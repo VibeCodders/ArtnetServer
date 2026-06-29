@@ -9,18 +9,17 @@ namespace ArtnetNode
     {
         private SerialPort? _serialPort;
         private readonly object _lock = new object();
-        private byte[] _txBuffer = new byte[513]; // 1 start code + 512 channels
+        
+        // Transmission Thread State
+        private Thread? _txThread;
+        private bool _isTxRunning;
+        private readonly byte[] _sharedBuffer = new byte[512];
 
         public bool IsConnected => _serialPort != null && _serialPort.IsOpen;
 
         public string ConnectionStatus => IsConnected 
             ? $"Connesso su {_serialPort?.PortName} (Open DMX)" 
             : "Sconnesso";
-
-        public OpenDmxInterface()
-        {
-            _txBuffer[0] = 0x00; // DMX Start Code
-        }
 
         public void Connect(string portName)
         {
@@ -43,11 +42,38 @@ namespace ArtnetNode
                 // Clear any buffers
                 _serialPort.DiscardInBuffer();
                 _serialPort.DiscardOutBuffer();
+
+                // Clear shared buffer
+                Array.Clear(_sharedBuffer, 0, _sharedBuffer.Length);
+
+                // Start transmission thread
+                _isTxRunning = true;
+                _txThread = new Thread(TxLoop)
+                {
+                    IsBackground = true,
+                    Priority = ThreadPriority.Highest, // High priority to reduce transmission jitter
+                    Name = "OpenDmxTxThread"
+                };
+                _txThread.Start();
             }
         }
 
         public void Disconnect()
         {
+            lock (_lock)
+            {
+                _isTxRunning = false;
+            }
+
+            if (_txThread != null)
+            {
+                if (_txThread.IsAlive)
+                {
+                    _txThread.Join(500); // Wait for thread to exit
+                }
+                _txThread = null;
+            }
+
             lock (_lock)
             {
                 if (_serialPort != null)
@@ -75,37 +101,62 @@ namespace ArtnetNode
 
         public void SendDmx(byte[] dmxData)
         {
-            if (!IsConnected || _serialPort == null)
-                return;
-
             lock (_lock)
             {
+                // Update shared buffer (up to 512 channels).
+                // Do not clear the rest of the buffer to preserve states of other channels
+                int copyLength = Math.Min(dmxData.Length, 512);
+                Array.Copy(dmxData, 0, _sharedBuffer, 0, copyLength);
+            }
+        }
+
+        private void TxLoop()
+        {
+            byte[] localBuffer = new byte[513];
+            localBuffer[0] = 0x00; // DMX Start Code
+
+            while (true)
+            {
+                SerialPort? port = null;
+                bool running = false;
+
+                lock (_lock)
+                {
+                    running = _isTxRunning;
+                    port = _serialPort;
+                    if (running && port != null && port.IsOpen)
+                    {
+                        Array.Copy(_sharedBuffer, 0, localBuffer, 1, 512);
+                    }
+                    else
+                    {
+                        running = false;
+                    }
+                }
+
+                if (!running || port == null)
+                    break;
+
                 try
                 {
-                    // Copy DMX data into TX buffer (up to 512 bytes)
-                    int copyLength = Math.Min(dmxData.Length, 512);
-                    Array.Copy(dmxData, 0, _txBuffer, 1, copyLength);
-                    
-                    // Zero out remaining channels if DMX data is shorter than 512
-                    if (copyLength < 512)
-                    {
-                        Array.Clear(_txBuffer, 1 + copyLength, 512 - copyLength);
-                    }
-
                     // 1. Generate BREAK (low for at least 88us)
-                    _serialPort.BreakState = true;
+                    port.BreakState = true;
                     HighResolutionDelay(100); // 100 microseconds delay
 
                     // 2. Generate MAB (Mark After Break - high for at least 8us)
-                    _serialPort.BreakState = false;
+                    port.BreakState = false;
                     HighResolutionDelay(12); // 12 microseconds delay
 
                     // 3. Write data (513 bytes: start code + 512 DMX channels)
-                    _serialPort.Write(_txBuffer, 0, _txBuffer.Length);
+                    port.Write(localBuffer, 0, localBuffer.Length);
+
+                    // Sleep to maintain stable frame rate (~30ms interval -> ~33 Hz)
+                    Thread.Sleep(30);
                 }
                 catch (Exception)
                 {
-                    // Silent catch, wait for next frame
+                    // Sleep and retry if there's a temporary error
+                    Thread.Sleep(100);
                 }
             }
         }

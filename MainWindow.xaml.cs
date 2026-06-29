@@ -60,25 +60,55 @@ namespace Artnet
             _borderBrushes[0] = new SolidColorBrush(Color.FromRgb(42, 42, 53)); // Soft border
             _borderBrushes[0].Freeze();
 
-            // Pre-calculate color gradients for 1-255 DMX values
+            // Pre-calculate HSL color gradients for 1-255 DMX values
             for (int i = 1; i < 256; i++)
             {
-                float factor = i / 255.0f;
+                float factor = (i - 1) / 254.0f; // 0.0 to 1.0
 
-                // Background: Interpolate from Base Dark Grey (#16161C) to Deep Glowing Cyan (#005573)
-                byte bgR = (byte)(22 + (0 - 22) * factor);
-                byte bgG = (byte)(22 + (85 - 22) * factor);
-                byte bgB = (byte)(28 + (115 - 28) * factor);
-                _bgBrushes[i] = new SolidColorBrush(Color.FromRgb(bgR, bgG, bgB));
+                // Hue goes from 240 degrees (0.6666 - Blue) down to 0 degrees (0.0 - Red)
+                double hue = 0.6666 * (1.0 - factor);
+                double saturation = 0.85;
+
+                // Background: from deep dark blue/green/red to a glowing bright tone
+                double bgLightness = 0.12 + 0.28 * factor;
+                Color bgColor = ColorFromHsl(hue, saturation, bgLightness);
+                _bgBrushes[i] = new SolidColorBrush(bgColor);
                 _bgBrushes[i].Freeze();
 
-                // Border: Interpolate from Soft Grey (#2A2A35) to Neon Cyan (#00E5FF)
-                byte borderR = (byte)(42 + (0 - 42) * factor);
-                byte borderG = (byte)(42 + (229 - 42) * factor);
-                byte borderB = (byte)(53 + (255 - 53) * factor);
-                _borderBrushes[i] = new SolidColorBrush(Color.FromRgb(borderR, borderG, borderB));
+                // Border: same hue, but much brighter to create a "glowing neon" effect
+                double borderLightness = 0.22 + 0.38 * factor;
+                Color borderColor = ColorFromHsl(hue, saturation, borderLightness);
+                _borderBrushes[i] = new SolidColorBrush(borderColor);
                 _borderBrushes[i].Freeze();
             }
+        }
+
+        private static Color ColorFromHsl(double h, double s, double l)
+        {
+            double r = 0, g = 0, b = 0;
+            if (s == 0)
+            {
+                r = g = b = l;
+            }
+            else
+            {
+                double q = l < 0.5 ? l * (1.0 + s) : l + s - l * s;
+                double p = 2.0 * l - q;
+                r = HueToRgb(p, q, h + 1.0 / 3.0);
+                g = HueToRgb(p, q, h);
+                b = HueToRgb(p, q, h - 1.0 / 3.0);
+            }
+            return Color.FromRgb((byte)Math.Clamp(r * 255, 0, 255), (byte)Math.Clamp(g * 255, 0, 255), (byte)Math.Clamp(b * 255, 0, 255));
+        }
+
+        private static double HueToRgb(double p, double q, double t)
+        {
+            if (t < 0) t += 1.0;
+            if (t > 1) t -= 1.0;
+            if (t < 1.0 / 6.0) return p + (q - p) * 6.0 * t;
+            if (t < 1.0 / 2.0) return q;
+            if (t < 2.0 / 3.0) return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+            return p;
         }
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -405,12 +435,6 @@ namespace Artnet
             {
                 int copyLength = Math.Min(e.DmxData.Length, 512);
                 Array.Copy(e.DmxData, 0, _dmxDataBuffer, 0, copyLength);
-                
-                // If the packet has fewer channels, clear the remaining
-                if (copyLength < 512)
-                {
-                    Array.Clear(_dmxDataBuffer, copyLength, 512 - copyLength);
-                }
 
                 _hasNewDmxData = true;
             }
