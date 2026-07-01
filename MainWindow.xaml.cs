@@ -15,8 +15,7 @@ namespace Artnet
     public partial class MainWindow : Window
     {
         // Core Components
-        private ArtNetServer? _artNetServer;
-        private IDmxInterface? _dmxInterface;
+        private ArtnetNodeEngine? _engine;
 
         // UI Performance & State
         private Border[] _channelBorders = new Border[512];
@@ -296,42 +295,33 @@ namespace Artnet
                     return;
                 }
 
-                // 2. Initialize and connect DMX Interface
-                switch (driverIndex)
+                string driverType = driverIndex switch
                 {
-                    case 0:
-                        _dmxInterface = new SimulationDmxInterface();
-                        break;
-                    case 1:
-                        _dmxInterface = new EnttecProDmxInterface();
-                        break;
-                    case 2:
-                        _dmxInterface = new OpenDmxInterface();
-                        break;
-                    default:
-                        _dmxInterface = new SimulationDmxInterface();
-                        break;
-                }
+                    0 => "simulation",
+                    1 => "enttec",
+                    2 => "open",
+                    _ => "simulation"
+                };
 
-                Log($"Connessione all'interfaccia DMX ({_dmxInterface.GetType().Name})...");
-                _dmxInterface.Connect(portName);
-                Log($"Interfaccia DMX in stato: {_dmxInterface.ConnectionStatus}");
-
-                // 3. Initialize and start Art-Net server
-                _artNetServer = new ArtNetServer
+                // 2. Initialize and start ArtnetNodeEngine
+                _engine = new ArtnetNodeEngine
                 {
                     BindIpAddress = selectedIp,
                     TargetUniverse = universe,
-                    Port = 6454
+                    Port = 6454,
+                    DriverType = driverType,
+                    ComPort = portName
                 };
 
-                _artNetServer.DmxReceived += ArtNetServer_DmxReceived;
-                _artNetServer.ErrorOccurred += ArtNetServer_ErrorOccurred;
-                _artNetServer.LogMessage += ArtNetServer_LogMessage;
+                _engine.DmxReceived += ArtNetServer_DmxReceived;
+                _engine.ErrorOccurred += ArtNetServer_ErrorOccurred;
+                _engine.LogMessage += ArtNetServer_LogMessage;
 
-                _artNetServer.Start();
+                Log($"Connessione all'interfaccia DMX ({driverType})...");
+                _engine.Start();
+                Log($"Interfaccia DMX in stato: {_engine.ConnectionStatus}");
 
-                if (_artNetServer.IsRunning)
+                if (_engine.IsRunning)
                 {
                     // Update UI Controls
                     ComboIpAddress.IsEnabled = false;
@@ -352,8 +342,7 @@ namespace Artnet
                 else
                 {
                     UpdateLedState("error");
-                    _dmxInterface.Disconnect();
-                    _dmxInterface = null;
+                    _engine = null;
                 }
             }
             catch (Exception ex)
@@ -361,12 +350,7 @@ namespace Artnet
                 MessageBox.Show($"Si è verificato un errore durante l'avvio:\n{ex.Message}", "Errore Avvio", MessageBoxButton.OK, MessageBoxImage.Error);
                 Log($"[ERRORE] Inizializzazione fallita: {ex.Message}");
                 UpdateLedState("error");
-                
-                if (_dmxInterface != null)
-                {
-                    _dmxInterface.Disconnect();
-                    _dmxInterface = null;
-                }
+                _engine = null;
             }
         }
 
@@ -378,22 +362,14 @@ namespace Artnet
             _uiUpdateTimer.Stop();
             _statsTimer.Stop();
 
-            // Stop Art-Net Server
-            if (_artNetServer != null)
+            // Stop Engine
+            if (_engine != null)
             {
-                _artNetServer.Stop();
-                _artNetServer.DmxReceived -= ArtNetServer_DmxReceived;
-                _artNetServer.ErrorOccurred -= ArtNetServer_ErrorOccurred;
-                _artNetServer.LogMessage -= ArtNetServer_LogMessage;
-                _artNetServer = null;
-            }
-
-            // Disconnect DMX Hardware
-            if (_dmxInterface != null)
-            {
-                _dmxInterface.Disconnect();
-                Log($"Interfaccia DMX scollegata. {_dmxInterface.ConnectionStatus}");
-                _dmxInterface = null;
+                _engine.Stop();
+                _engine.DmxReceived -= ArtNetServer_DmxReceived;
+                _engine.ErrorOccurred -= ArtNetServer_ErrorOccurred;
+                _engine.LogMessage -= ArtNetServer_LogMessage;
+                _engine = null;
             }
 
             // Zero out local buffer and reset channels on GUI
@@ -443,9 +419,6 @@ namespace Artnet
             _fpsPacketCount++;
             _totalPackets++;
             _lastSenderIp = e.SenderIp;
-
-            // Route to physical DMX adapter immediately on the network thread to minimize jitter/latency
-            _dmxInterface?.SendDmx(e.DmxData);
         }
 
         private void ArtNetServer_ErrorOccurred(object? sender, string errorMessage)
