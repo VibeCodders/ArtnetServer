@@ -142,73 +142,116 @@
             <!-- Configuration -->
             <Border Grid.Row="1" Style="{StaticResource PanelCard}">
                 <StackPanel>
-                    <TextBlock Text="Configurazione Rete e DMX" Style="{StaticResource HeaderLabel}"/>
+                    <TextBlock Text="Configurazione Rete ed IP" Style="{StaticResource HeaderLabel}"/>
                     
                     <!-- Network IP -->
                     <TextBlock Text="Indirizzo IP Locale" Style="{StaticResource FieldLabel}"/>
                     <ComboBox x:Name="ComboIpAddress" Style="{StaticResource ModernComboBox}"/>
 
-                    <!-- ArtNet Universe -->
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="10"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Grid.Column="0">
-                            <TextBlock Text="Universo Art-Net" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="ComboUniverse" Style="{StaticResource ModernComboBox}">
-                                <ComboBoxItem Content="0" IsSelected="True"/>
-                                <ComboBoxItem Content="1"/>
-                                <ComboBoxItem Content="2"/>
-                                <ComboBoxItem Content="3"/>
-                                <ComboBoxItem Content="4"/>
-                                <ComboBoxItem Content="5"/>
-                                <ComboBoxItem Content="6"/>
-                                <ComboBoxItem Content="7"/>
-                                <ComboBoxItem Content="8"/>
-                                <ComboBoxItem Content="9"/>
-                                <ComboBoxItem Content="10"/>
-                                <ComboBoxItem Content="11"/>
-                                <ComboBoxItem Content="12"/>
-                                <ComboBoxItem Content="13"/>
-                                <ComboBoxItem Content="14"/>
-                                <ComboBoxItem Content="15"/>
+                    <!-- UDP Port -->
+                    <TextBlock Text="Porta UDP" Style="{StaticResource FieldLabel}"/>
+                    <TextBox x:Name="TxtPort" Text="6454" Style="{StaticResource ModernTextBox}" IsReadOnly="True"/>
+
+                    <!-- Add Interface Section -->
+                    <Border Background="#1C1C24" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,4,0,8">
+                        <StackPanel>
+                            <TextBlock Text="Aggiungi Nuova Interfaccia" Foreground="{StaticResource AccentBlue}" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                            
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="Universo Art-Net" Style="{StaticResource FieldLabel}"/>
+                                    <ComboBox x:Name="ComboUniverse" Style="{StaticResource ModernComboBox}">
+                                        <ComboBoxItem Content="0" IsSelected="True"/>
+                                        <ComboBoxItem Content="1"/>
+                                        <ComboBoxItem Content="2"/>
+                                        <ComboBoxItem Content="3"/>
+                                        <ComboBoxItem Content="4"/>
+                                        <ComboBoxItem Content="5"/>
+                                        <ComboBoxItem Content="6"/>
+                                        <ComboBoxItem Content="7"/>
+                                        <ComboBoxItem Content="8"/>
+                                        <ComboBoxItem Content="9"/>
+                                        <ComboBoxItem Content="10"/>
+                                        <ComboBoxItem Content="11"/>
+                                        <ComboBoxItem Content="12"/>
+                                        <ComboBoxItem Content="13"/>
+                                        <ComboBoxItem Content="14"/>
+                                        <ComboBoxItem Content="15"/>
+                                    </ComboBox>
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Porta COM" Style="{StaticResource FieldLabel}"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <ComboBox x:Name="ComboComPort" Style="{StaticResource ModernComboBox}" Margin="0,0,4,12"/>
+                                        <Button x:Name="BtnRefreshCom" Grid.Column="1" Width="30" Height="30" Margin="0,0,0,12" Background="#22222B" BorderBrush="{StaticResource PanelBorder}" Click="BtnRefreshCom_Click" ToolTip="Aggiorna Porte COM">
+                                            <Path Data="M10,20A10,10 0 1,1 20,10A10,10 0 0,1 10,20M10,2A8,8 0 1,0 18,10H15L19,14L23,10H20A10,10 0 0,0 10,2Z" Fill="{StaticResource TextLight}" Width="12" Height="12" Stretch="Uniform"/>
+                                        </Button>
+                                    </Grid>
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Text="Interfaccia USB DMX" Style="{StaticResource FieldLabel}"/>
+                            <ComboBox x:Name="ComboDmxDriver" Style="{StaticResource ModernComboBox}" SelectionChanged="ComboDmxDriver_SelectionChanged">
+                                <ComboBoxItem Content="Simulatore (Senza Hardware)" IsSelected="True"/>
+                                <ComboBoxItem Content="Enttec DMX USB Pro"/>
+                                <ComboBoxItem Content="Open DMX USB"/>
+                                <ComboBoxItem Content="Enttec DMX USB Pro Mk2"/>
+                                <ComboBoxItem Content="FTDI Generic DMX (OpenDMX clone)"/>
+                                <ComboBoxItem Content="uDMX (Eurolite / Velleman / clone)"/>
+                                <ComboBoxItem Content="DMX4ALL USB Interface"/>
+                                <ComboBoxItem Content="Chauvet Xpress USB"/>
+                                <ComboBoxItem Content="Eurolite USB-DMX512 Pro"/>
+                                <ComboBoxItem Content="Generic HID DMX (fallback)"/>
                             </ComboBox>
-                        </StackPanel>
-                        <StackPanel Grid.Column="2">
-                            <TextBlock Text="Porta UDP" Style="{StaticResource FieldLabel}"/>
-                            <TextBox x:Name="TxtPort" Text="6454" Style="{StaticResource ModernTextBox}" IsReadOnly="True"/>
-                        </StackPanel>
-                    </Grid>
 
-                    <!-- USB DMX Driver Selection -->
-                    <TextBlock Text="Interfaccia USB DMX" Style="{StaticResource FieldLabel}"/>
-                    <ComboBox x:Name="ComboDmxDriver" Style="{StaticResource ModernComboBox}" SelectionChanged="ComboDmxDriver_SelectionChanged">
-                        <ComboBoxItem Content="Simulatore (Senza Hardware)"/>
-                        <ComboBoxItem Content="Enttec DMX USB Pro" IsSelected="True"/>
-                        <ComboBoxItem Content="Open DMX USB"/>
-                        <ComboBoxItem Content="Enttec DMX USB Pro Mk2"/>
-                        <ComboBoxItem Content="FTDI Generic DMX (OpenDMX clone)"/>
-                        <ComboBoxItem Content="uDMX (Eurolite / Velleman / clone)"/>
-                        <ComboBoxItem Content="DMX4ALL USB Interface"/>
-                        <ComboBoxItem Content="Chauvet Xpress USB"/>
-                        <ComboBoxItem Content="Eurolite USB-DMX512 Pro"/>
-                        <ComboBoxItem Content="Generic HID DMX (fallback)"/>
-                    </ComboBox>
+                            <Button x:Name="BtnAddDevice" Height="30" Background="#0A2416" BorderBrush="#008040" BorderThickness="1" Click="BtnAddDevice_Click">
+                                <Button.Resources>
+                                    <Style TargetType="Border">
+                                        <Setter Property="CornerRadius" Value="6"/>
+                                    </Style>
+                                </Button.Resources>
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Data="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z" Fill="{StaticResource AccentGreen}" Stretch="Uniform" Width="14" Height="14" Margin="0,0,6,0"/>
+                                    <TextBlock Text="AGGIUNGI INTERFACCIA" Foreground="{StaticResource AccentGreen}" FontWeight="Bold" FontSize="11" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+                    </Border>
 
-                    <!-- COM Port Selection -->
-                    <TextBlock Text="Porta COM" Style="{StaticResource FieldLabel}"/>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <ComboBox x:Name="ComboComPort" Style="{StaticResource ModernComboBox}" Margin="0,0,8,12"/>
-                        <Button x:Name="BtnRefreshCom" Grid.Column="1" Width="36" Height="34" Margin="0,0,0,12" Background="#22222B" BorderBrush="{StaticResource PanelBorder}" Click="BtnRefreshCom_Click" ToolTip="Aggiorna Porte COM">
-                            <Path Data="M10,20A10,10 0 1,1 20,10A10,10 0 0,1 10,20M10,2A8,8 0 1,0 18,10H15L19,14L23,10H20A10,10 0 0,0 10,2Z" Fill="{StaticResource TextLight}" Width="16" Height="16" Stretch="Uniform"/>
-                        </Button>
-                    </Grid>
+                    <!-- List of Configured Interfaces -->
+                    <TextBlock Text="Interfacce Attive" Style="{StaticResource FieldLabel}" Margin="0,6,0,2"/>
+                    <ListBox x:Name="ListConfiguredDevices" Height="100" Background="#0A0A0F" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" ScrollViewer.VerticalScrollBarVisibility="Auto" HorizontalContentAlignment="Stretch">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="2" HorizontalAlignment="Stretch">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{Binding}" Foreground="{StaticResource TextLight}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                    <Button Grid.Column="1" Width="20" Height="20" Margin="4,0,0,0" Background="#290E13" BorderBrush="#800010" Click="BtnRemoveDevice_Click" Tag="{Binding}" ToolTip="Rimuovi Interfaccia">
+                                        <Button.Resources>
+                                            <Style TargetType="Border">
+                                                <Setter Property="CornerRadius" Value="3"/>
+                                            </Style>
+                                        </Button.Resources>
+                                        <Path Data="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z" Fill="{StaticResource AccentRed}" Stretch="Uniform" Width="8" Height="8"/>
+                                    </Button>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
                 </StackPanel>
             </Border>
 
@@ -310,8 +353,16 @@
                     </Grid.RowDefinitions>
 
                     <Grid Grid.Row="0" Margin="0,0,0,10">
-                        <TextBlock Text="Monitoraggio Canali DMX (Valore &amp; Intensità)" Style="{StaticResource HeaderLabel}" Margin="0"/>
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="Monitoraggio Canali DMX" Style="{StaticResource HeaderLabel}" Margin="0,0,16,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Universo:" Foreground="{StaticResource TextMuted}" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <ComboBox x:Name="ComboMonitorUniverse" Width="80" Height="26" Style="{StaticResource ModernComboBox}" Margin="0" SelectionChanged="ComboMonitorUniverse_SelectionChanged"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                             <Border Width="12" Height="12" Background="{StaticResource AccentBlue}" CornerRadius="2" Margin="0,0,6,0" VerticalAlignment="Center"/>
                             <TextBlock Text="Attività Canale" Foreground="{StaticResource TextMuted}" FontSize="11" VerticalAlignment="Center"/>
                         </StackPanel>

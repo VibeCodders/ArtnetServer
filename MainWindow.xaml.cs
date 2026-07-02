@@ -20,7 +20,10 @@ namespace Artnet
         // UI Performance & State
         private Border[] _channelBorders = new Border[512];
         private TextBlock[] _channelValueTexts = new TextBlock[512];
-        private byte[] _dmxDataBuffer = new byte[512];
+        public List<DmxInterfaceConfig> InitialDevices { get; } = new List<DmxInterfaceConfig>();
+        private readonly System.Collections.ObjectModel.ObservableCollection<DmxInterfaceConfig> _configuredDevices = new();
+        private readonly Dictionary<int, byte[]> _universeBuffers = new Dictionary<int, byte[]>();
+        private int _monitoredUniverse = 0;
         private readonly object _dmxLock = new object();
         private bool _hasNewDmxData = false;
         
@@ -114,12 +117,34 @@ namespace Artnet
         {
             Log("Inizializzazione sistema in corso...");
             
+            // Bind list views
+            ListConfiguredDevices.ItemsSource = _configuredDevices;
+
+            // Load initial devices or default to a simulation
+            if (InitialDevices.Count > 0)
+            {
+                foreach (var dev in InitialDevices)
+                {
+                    _configuredDevices.Add(dev);
+                }
+            }
+            else
+            {
+                _configuredDevices.Add(new DmxInterfaceConfig
+                {
+                    Universe = 0,
+                    DriverType = "simulation",
+                    ComPort = ""
+                });
+            }
+
             // Build visual DMX Channel grid
             BuildDmxVisualGrid();
             
             // Load configuration options
             LoadNetworkInterfaces();
             LoadComPorts();
+            RefreshMonitorUniverses();
             
             // Setup timers
             _uiUpdateTimer.Interval = TimeSpan.FromMilliseconds(30); // ~33 FPS refresh rate
@@ -277,6 +302,13 @@ namespace Artnet
         {
             try
             {
+                if (_configuredDevices.Count == 0)
+                {
+                    MessageBox.Show("Configurare almeno un'interfaccia DMX prima di avviare il server.", "Nessuna Interfaccia", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    Log("[ERRORE] Avvio annullato: nessuna interfaccia DMX configurata.");
+                    return;
+                }
+
                 Log("Avvio del server in corso...");
 
                 // 1. Get configuration
@@ -286,49 +318,21 @@ namespace Artnet
                     selectedIp = selectedIp.Split(' ')[0]; // Strip the friendly name
                 }
 
-                int universe = ComboUniverse.SelectedIndex;
-                int driverIndex = ComboDmxDriver.SelectedIndex;
-                string portName = ComboComPort.SelectedItem?.ToString() ?? "";
-
-                if ((driverIndex == 1 || driverIndex == 2 || driverIndex == 3 || driverIndex == 4 || driverIndex == 6 || driverIndex == 8) && string.IsNullOrEmpty(portName))
-                {
-                    MessageBox.Show("Selezionare una porta COM valida per l'interfaccia hardware scelta.", "Errore COM", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    Log("[ERRORE] Avvio annullato: nessuna porta COM selezionata.");
-                    return;
-                }
-
-                string driverType = driverIndex switch
-                {
-                    0 => "simulation",
-                    1 => "enttec",
-                    2 => "open",
-                    3 => "enttec_mk2",
-                    4 => "ftdi_generic",
-                    5 => "udmx",
-                    6 => "dmx4all",
-                    7 => "chauvet",
-                    8 => "eurolite_pro",
-                    9 => "hid_dmx",
-                    _ => "simulation"
-                };
-
                 // 2. Initialize and start ArtnetNodeEngine
                 _engine = new ArtnetNodeEngine
                 {
                     BindIpAddress = selectedIp,
-                    TargetUniverse = universe,
-                    Port = 6454,
-                    DriverType = driverType,
-                    ComPort = portName
+                    Port = 6454
                 };
+                _engine.Interfaces.AddRange(_configuredDevices);
 
                 _engine.DmxReceived += ArtNetServer_DmxReceived;
                 _engine.ErrorOccurred += ArtNetServer_ErrorOccurred;
                 _engine.LogMessage += ArtNetServer_LogMessage;
 
-                Log($"Connessione all'interfaccia DMX ({driverType})...");
+                Log($"Connessione a {_configuredDevices.Count} interfacce DMX...");
                 _engine.Start();
-                Log($"Interfaccia DMX in stato: {_engine.ConnectionStatus}");
+                Log($"Interfacce DMX in stato: {_engine.ConnectionStatus}");
 
                 if (_engine.IsRunning)
                 {
@@ -338,6 +342,8 @@ namespace Artnet
                     ComboDmxDriver.IsEnabled = false;
                     ComboComPort.IsEnabled = false;
                     BtnRefreshCom.IsEnabled = false;
+                    BtnAddDevice.IsEnabled = false;
+                    ListConfiguredDevices.IsEnabled = false;
                     
                     BtnPlay.IsEnabled = false;
                     BtnStop.IsEnabled = true;
@@ -385,7 +391,7 @@ namespace Artnet
             // Zero out local buffer and reset channels on GUI
             lock (_dmxLock)
             {
-                Array.Clear(_dmxDataBuffer, 0, _dmxDataBuffer.Length);
+                _universeBuffers.Clear();
                 _hasNewDmxData = true;
             }
             
@@ -396,6 +402,8 @@ namespace Artnet
             ComboIpAddress.IsEnabled = true;
             ComboUniverse.IsEnabled = true;
             ComboDmxDriver.IsEnabled = true;
+            BtnAddDevice.IsEnabled = true;
+            ListConfiguredDevices.IsEnabled = true;
             
             int idx = ComboDmxDriver.SelectedIndex;
             bool needsCom = idx == 1 || idx == 2 || idx == 3 || idx == 4 || idx == 6 || idx == 8;
@@ -428,8 +436,14 @@ namespace Artnet
             // Thread-safe copy of incoming data
             lock (_dmxLock)
             {
+                if (!_universeBuffers.TryGetValue(e.Universe, out byte[]? buffer))
+                {
+                    buffer = new byte[512];
+                    _universeBuffers[e.Universe] = buffer;
+                }
                 int copyLength = Math.Min(e.DmxData.Length, 512);
-                Array.Copy(e.DmxData, 0, _dmxDataBuffer, 0, copyLength);
+                Array.Clear(buffer, 0, 512);
+                Array.Copy(e.DmxData, 0, buffer, 0, copyLength);
 
                 _hasNewDmxData = true;
             }
@@ -463,7 +477,10 @@ namespace Artnet
             {
                 if (_hasNewDmxData)
                 {
-                    Array.Copy(_dmxDataBuffer, 0, localData, 0, 512);
+                    if (_universeBuffers.TryGetValue(_monitoredUniverse, out byte[]? buffer))
+                    {
+                        Array.Copy(buffer, 0, localData, 0, 512);
+                    }
                     _hasNewDmxData = false;
                     updateNeeded = true;
                 }
@@ -532,7 +549,6 @@ namespace Artnet
                 TxtStatusLabel.Foreground = new SolidColorBrush(Color.FromRgb(255, 23, 68));
             }
         }
-
         private void BtnBlackout_Click(object sender, RoutedEventArgs e)
         {
             if (_engine != null && BtnBlackout != null)
@@ -553,6 +569,117 @@ namespace Artnet
                     BtnBlackout.Background = new SolidColorBrush(Color.FromRgb(38, 28, 8));
                     BtnBlackout.BorderBrush = new SolidColorBrush(Color.FromRgb(178, 106, 0));
                     Log("[INFO] Modalità BLACKOUT disattivata. Ripristino controllo Art-Net.");
+                }
+            }
+        }
+
+        private void BtnAddDevice_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                int universe = ComboUniverse.SelectedIndex;
+                if (universe < 0) universe = 0;
+
+                int driverIndex = ComboDmxDriver.SelectedIndex;
+                if (driverIndex < 0) driverIndex = 0;
+
+                string portName = ComboComPort.SelectedItem?.ToString() ?? "";
+
+                if ((driverIndex == 1 || driverIndex == 2 || driverIndex == 3 || driverIndex == 4 || driverIndex == 6 || driverIndex == 8) && string.IsNullOrEmpty(portName))
+                {
+                    MessageBox.Show("Selezionare una porta COM valida per l'interfaccia hardware scelta.", "Errore COM", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                string driverType = driverIndex switch
+                {
+                    0 => "simulation",
+                    1 => "enttec",
+                    2 => "open",
+                    3 => "enttec_mk2",
+                    4 => "ftdi_generic",
+                    5 => "udmx",
+                    6 => "dmx4all",
+                    7 => "chauvet",
+                    8 => "eurolite_pro",
+                    9 => "hid_dmx",
+                    _ => "simulation"
+                };
+
+                if (_configuredDevices.Any(d => d.Universe == universe && d.DriverType == driverType && d.ComPort == portName))
+                {
+                    MessageBox.Show("Questa interfaccia DMX è già configurata per questo universo.", "Duplicato", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                var newDevice = new DmxInterfaceConfig
+                {
+                    Universe = universe,
+                    DriverType = driverType,
+                    ComPort = portName
+                };
+
+                _configuredDevices.Add(newDevice);
+                RefreshMonitorUniverses();
+                Log($"Aggiunta interfaccia: {newDevice}");
+            }
+            catch (Exception ex)
+            {
+                Log($"[ERRORE] Impossibile aggiungere l'interfaccia: {ex.Message}");
+            }
+        }
+
+        private void BtnRemoveDevice_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.Tag is DmxInterfaceConfig device)
+            {
+                _configuredDevices.Remove(device);
+                RefreshMonitorUniverses();
+                Log($"Rimossa interfaccia: {device}");
+            }
+        }
+
+        private void RefreshMonitorUniverses()
+        {
+            int selectedUniverse = -1;
+            if (ComboMonitorUniverse.SelectedItem is int u)
+            {
+                selectedUniverse = u;
+            }
+
+            ComboMonitorUniverse.SelectionChanged -= ComboMonitorUniverse_SelectionChanged;
+            ComboMonitorUniverse.Items.Clear();
+
+            var universes = _configuredDevices.Select(d => d.Universe).Distinct().OrderBy(u => u).ToList();
+            foreach (var uni in universes)
+            {
+                ComboMonitorUniverse.Items.Add(uni);
+            }
+
+            if (universes.Count > 0)
+            {
+                if (universes.Contains(selectedUniverse))
+                {
+                    ComboMonitorUniverse.SelectedItem = selectedUniverse;
+                }
+                else
+                {
+                    ComboMonitorUniverse.SelectedIndex = 0;
+                }
+            }
+            ComboMonitorUniverse.SelectionChanged += ComboMonitorUniverse_SelectionChanged;
+
+            _monitoredUniverse = ComboMonitorUniverse.SelectedItem is int val ? val : 0;
+        }
+
+        private void ComboMonitorUniverse_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (ComboMonitorUniverse.SelectedItem is int val)
+            {
+                _monitoredUniverse = val;
+                lock (_dmxLock)
+                {
+                    _hasNewDmxData = true;
                 }
             }
         }

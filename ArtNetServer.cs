@@ -31,6 +31,7 @@ namespace ArtnetNode
         // Configuration
         public string BindIpAddress { get; set; } = "0.0.0.0";
         public int TargetUniverse { get; set; } = 0;
+        public HashSet<int> TargetUniverses { get; } = new HashSet<int>();
         public int Port { get; set; } = 6454;
 
         // Statistics
@@ -64,7 +65,13 @@ namespace ArtnetNode
                 TotalPacketsReceived = 0;
                 LastSenderIpAddress = "N/A";
 
-                LogMessage?.Invoke(this, $"Server Art-Net avviato su {BindIpAddress}:{Port}, in ascolto per Universo {TargetUniverse}");
+                if (TargetUniverses.Count == 0)
+                {
+                    TargetUniverses.Add(TargetUniverse);
+                }
+
+                string universesStr = string.Join(", ", TargetUniverses);
+                LogMessage?.Invoke(this, $"Server Art-Net avviato su {BindIpAddress}:{Port}, in ascolto per Universi [{universesStr}]");
 
                 // Start receive loop
                 Task.Run(() => ReceiveLoop(_cts.Token), _cts.Token);
@@ -158,7 +165,7 @@ namespace ArtnetNode
                     Array.Copy(data, 18, dmxData, 0, length);
 
                     // Filter by target universe
-                    if (universe == TargetUniverse)
+                    if (TargetUniverses.Contains(universe))
                     {
                         DmxReceived?.Invoke(this, new DmxEventArgs(dmxData, universe, senderIp, sequence));
                     }

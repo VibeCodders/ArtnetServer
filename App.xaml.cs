@@ -35,6 +35,7 @@ public partial class App : Application
         int universe = 0;
         string driver = "simulation";
         string comPort = "";
+        var parsedDevices = new List<DmxInterfaceConfig>();
 
         for (int i = 0; i < e.Args.Length; i++)
         {
@@ -65,6 +66,27 @@ public partial class App : Application
             {
                 comPort = e.Args[++i];
             }
+            else if ((arg == "--device" || arg == "-dev") && i + 1 < e.Args.Length)
+            {
+                string devVal = e.Args[++i];
+                var parts = devVal.Split(',');
+                if (parts.Length >= 2)
+                {
+                    if (int.TryParse(parts[0], out int parsedUniverse))
+                    {
+                        var devConfig = new DmxInterfaceConfig
+                        {
+                            Universe = parsedUniverse,
+                            DriverType = parts[1]
+                        };
+                        if (parts.Length >= 3)
+                        {
+                            devConfig.ComPort = parts[2];
+                        }
+                        parsedDevices.Add(devConfig);
+                    }
+                }
+            }
             else if (arg == "--help" || arg == "-h")
             {
                 ShowHelp();
@@ -75,16 +97,20 @@ public partial class App : Application
 
         if (mode == "cli")
         {
-            RunCliMode(ip, port, universe, driver, comPort);
+            RunCliMode(ip, port, universe, driver, comPort, parsedDevices);
         }
         else if (mode == "headless")
         {
-            RunHeadlessMode(ip, port, universe, driver, comPort);
+            RunHeadlessMode(ip, port, universe, driver, comPort, parsedDevices);
         }
         else
         {
             // Default: GUI Mode
             var mainWindow = new MainWindow();
+            if (parsedDevices.Count > 0)
+            {
+                mainWindow.InitialDevices.AddRange(parsedDevices);
+            }
             mainWindow.Show();
         }
     }
@@ -100,9 +126,12 @@ public partial class App : Application
         Console.WriteLine("  -u, --universe [num]           Universo DMX target (Predefinito: 0)");
         Console.WriteLine("  -d, --driver [sim|pro|open]    Driver di uscita DMX (simulation, enttec, open) (Predefinito: simulation)");
         Console.WriteLine("  -c, --com [port_name]          Porta COM seriale per driver hardware (es. COM3)");
+        Console.WriteLine("  -dev, --device [uni,drv,com]   Configura un'interfaccia DMX (es: 0,simulation o 1,enttec,COM3)");
+        Console.WriteLine("                                 Può essere ripetuto per configurare molteplici USB.");
         Console.WriteLine("  -h, --help                     Mostra questo messaggio di aiuto");
         Console.WriteLine("\nEsempi:");
         Console.WriteLine("  Artnet.exe --mode cli --driver open --com COM3");
+        Console.WriteLine("  Artnet.exe --mode cli --device 0,simulation --device 1,enttec,COM3");
         Console.WriteLine("  Artnet.exe --mode headless --universe 2\n");
     }
 
@@ -122,7 +151,7 @@ public partial class App : Application
         Console.SetIn(standardInput);
     }
 
-    private void RunCliMode(string ip, int port, int universe, string driver, string comPort)
+    private void RunCliMode(string ip, int port, int universe, string driver, string comPort, List<DmxInterfaceConfig> devices)
     {
         InitializeConsole();
 
@@ -137,6 +166,11 @@ public partial class App : Application
             DriverType = driver,
             ComPort = comPort
         };
+
+        if (devices.Count > 0)
+        {
+            engine.Interfaces.AddRange(devices);
+        }
 
         engine.LogMessage += (s, msg) => {
             Console.ForegroundColor = ConsoleColor.Gray;
@@ -266,16 +300,20 @@ public partial class App : Application
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine($"\n--- STATISTICHE ATTUALI (ore {DateTime.Now:HH:mm:ss}) ---");
         Console.WriteLine($"  - Indirizzo Bind: {engine.BindIpAddress}:{engine.Port}");
-        Console.WriteLine($"  - Universo Target: {engine.TargetUniverse}");
-        Console.WriteLine($"  - Driver DMX: {engine.DriverType}");
-        Console.WriteLine($"  - Stato Connessione DMX: {engine.ConnectionStatus}");
         Console.WriteLine($"  - Pacchetti Totali: {engine.TotalPacketsReceived}");
         Console.WriteLine($"  - Ultimo Mittente IP: {engine.LastSenderIpAddress}");
+        Console.WriteLine($"  - Stato Connessione DMX: {engine.ConnectionStatus}");
+        Console.WriteLine("  - Interfacce DMX Configurate:");
+        foreach (var inst in engine.ActiveInterfaces)
+        {
+            string portText = string.IsNullOrEmpty(inst.Config.ComPort) ? "" : $" ({inst.Config.ComPort})";
+            Console.WriteLine($"    * Universo {inst.Config.Universe}: {inst.Config.DriverType}{portText} -> Stato: {inst.ConnectionStatus}");
+        }
         Console.WriteLine("-----------------------------------------");
         Console.ResetColor();
     }
 
-    private void RunHeadlessMode(string ip, int port, int universe, string driver, string comPort)
+    private void RunHeadlessMode(string ip, int port, int universe, string driver, string comPort, List<DmxInterfaceConfig> devices)
     {
         var engine = new ArtnetNodeEngine
         {
@@ -285,6 +323,11 @@ public partial class App : Application
             DriverType = driver,
             ComPort = comPort
         };
+
+        if (devices.Count > 0)
+        {
+            engine.Interfaces.AddRange(devices);
+        }
 
         engine.LogMessage += (s, msg) => System.Diagnostics.Debug.WriteLine($"[HEADLESS LOG] {msg}");
         engine.ErrorOccurred += (s, err) => System.Diagnostics.Debug.WriteLine($"[HEADLESS ERRORE] {err}");
