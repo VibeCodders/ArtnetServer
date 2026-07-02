@@ -331,6 +331,13 @@
                             <TextBlock Text="Ultimo Mittente:" Foreground="{StaticResource TextMuted}"/>
                             <TextBlock x:Name="TxtLastSender" HorizontalAlignment="Right" Text="N/A" Foreground="{StaticResource TextLight}" TextTrimming="CharacterEllipsis" MaxWidth="150"/>
                         </Grid>
+                        
+                        <Separator Background="{StaticResource PanelBorder}" Margin="0,12,0,12"/>
+                        
+                        <StackPanel>
+                            <TextBlock Text="Dashboard Web:" Foreground="{StaticResource TextMuted}" FontSize="12"/>
+                            <TextBlock x:Name="TxtWebUrl" Text="Sconnesso" Foreground="{StaticResource AccentBlue}" FontWeight="SemiBold" FontSize="11" Margin="0,2,0,0" TextWrapping="Wrap" Cursor="Hand" MouseLeftButtonDown="TxtWebUrl_MouseLeftButtonDown"/>
+                        </StackPanel>
                     </StackPanel>
                 </Grid>
             </Border>

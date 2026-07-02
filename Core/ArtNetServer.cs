@@ -6,6 +6,18 @@ using System.Threading.Tasks;
 
 namespace ArtnetNode.Core
 {
+    public class ArtPollEventArgs : EventArgs
+    {
+        public string SenderIp { get; }
+        public int SenderPort { get; }
+
+        public ArtPollEventArgs(string senderIp, int senderPort)
+        {
+            SenderIp = senderIp;
+            SenderPort = senderPort;
+        }
+    }
+
     public class DmxEventArgs : EventArgs
     {
         public byte[] DmxData { get; }
@@ -40,10 +52,24 @@ namespace ArtnetNode.Core
         
         // Events
         public event EventHandler<DmxEventArgs>? DmxReceived;
+        public event EventHandler<ArtPollEventArgs>? PollReceived;
         public event EventHandler<string>? ErrorOccurred;
         public event EventHandler<string>? LogMessage;
 
         public bool IsRunning => _isRunning;
+
+        public void SendPacket(byte[] data, string targetIp, int targetPort)
+        {
+            if (_udpClient == null || !_isRunning) return;
+            try
+            {
+                _udpClient.Send(data, data.Length, targetIp, targetPort);
+            }
+            catch (Exception ex)
+            {
+                LogMessage?.Invoke(this, $"Errore nell'invio del pacchetto Art-Net: {ex.Message}");
+            }
+        }
 
         public void Start()
         {
@@ -81,6 +107,8 @@ namespace ArtnetNode.Core
                 _isRunning = false;
                 _udpClient?.Close();
                 _udpClient = null;
+                _cts?.Dispose();
+                _cts = null;
                 ErrorOccurred?.Invoke(this, $"Errore durante l'avvio del server: {ex.Message}");
             }
         }
@@ -111,25 +139,33 @@ namespace ArtnetNode.Core
                     byte[] data = result.Buffer;
                     string senderIp = result.RemoteEndPoint.Address.ToString();
 
-                    if (data.Length < 18) 
+                    if (data.Length < 14) 
                         continue; // Packet too short to be Art-Net
 
                     // 1. Check Header: "Art-Net\0"
                     // Bytes 0 to 7
                     if (data[0] != 'A' || data[1] != 'r' || data[2] != 't' || data[3] != '-' ||
-                        data[4] != 'N' || data[5] != 'e' || data[6] != 't' || data[7] != 0)
+                         data[4] != 'N' || data[5] != 'e' || data[6] != 't' || data[7] != 0)
                     {
                         continue; // Not Art-Net
                     }
 
-                    // 2. Check OpCode (Bytes 8-9, Little Endian, ArtDmx is 0x5000)
+                    // 2. Check OpCode (Bytes 8-9, Little Endian, ArtDmx is 0x5000, ArtPoll is 0x2000)
                     int opCode = data[8] | (data[9] << 8);
+                    if (opCode == 0x2000)
+                    {
+                        PollReceived?.Invoke(this, new ArtPollEventArgs(senderIp, result.RemoteEndPoint.Port));
+                        continue;
+                    }
                     if (opCode != 0x5000)
                     {
-                        // Ignore other opcodes (e.g. ArtPoll, ArtPollReply) for basic receiver,
+                        // Ignore other opcodes (e.g. ArtPollReply) for basic receiver,
                         // but they are valid Art-Net packets
                         continue;
                     }
+
+                    if (data.Length < 18)
+                        continue; // DMX packet must be at least 18 bytes
 
                     // 3. Check ProtVer (Bytes 10-11, Big Endian, should be 14)
                     int protVer = (data[10] << 8) | data[11];

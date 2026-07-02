@@ -205,6 +205,7 @@ public partial class App : Application
 
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine("Engine avviato con successo.");
+        Console.WriteLine($"Dashboard Web attiva su http://localhost:{engine.HttpPort}/");
         Console.ResetColor();
 
         var cts = new CancellationTokenSource();
@@ -301,6 +302,7 @@ public partial class App : Application
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine($"\n--- STATISTICHE ATTUALI (ore {DateTime.Now:HH:mm:ss}) ---");
         Console.WriteLine($"  - Indirizzo Bind: {engine.BindIpAddress}:{engine.Port}");
+        Console.WriteLine($"  - Dashboard Web: http://localhost:{engine.HttpPort}/");
         Console.WriteLine($"  - Pacchetti Totali: {engine.TotalPacketsReceived}");
         Console.WriteLine($"  - Ultimo Mittente IP: {engine.LastSenderIpAddress}");
         Console.WriteLine($"  - Stato Connessione DMX: {engine.ConnectionStatus}");

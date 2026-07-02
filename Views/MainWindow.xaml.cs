@@ -354,6 +354,16 @@ namespace Artnet.Views
                     _uiUpdateTimer.Start();
                     _statsTimer.Start();
 
+                    string ip = _engine.BindIpAddress;
+                    if (ip == "0.0.0.0")
+                    {
+                        TxtWebUrl.Text = $"http://localhost:{_engine.HttpPort}/";
+                    }
+                    else
+                    {
+                        TxtWebUrl.Text = $"http://{ip}:{_engine.HttpPort}/";
+                    }
+
                     UpdateLedState("running");
                 }
                 else
@@ -427,6 +437,7 @@ namespace Artnet.Views
             _totalPackets = 0;
             TxtTotalPackets.Text = "0";
             TxtLastSender.Text = "N/A";
+            TxtWebUrl.Text = "Sconnesso";
 
             UpdateLedState("stopped");
             Log("Server arrestato con successo.");
@@ -681,6 +692,25 @@ namespace Artnet.Views
                 lock (_dmxLock)
                 {
                     _hasNewDmxData = true;
+                }
+            }
+        }
+
+        private void TxtWebUrl_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (TxtWebUrl.Text != "Sconnesso" && TxtWebUrl.Text.StartsWith("http"))
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = TxtWebUrl.Text,
+                        UseShellExecute = true
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Log($"[ERRORE] Impossibile aprire il browser: {ex.Message}");
                 }
             }
         }

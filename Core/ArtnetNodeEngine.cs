@@ -1,7 +1,9 @@
 using System;
 using System.IO.Ports;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Text;
 using ArtnetNode.Drivers;
 
 namespace ArtnetNode.Core
@@ -9,6 +11,7 @@ namespace ArtnetNode.Core
     public class ArtnetNodeEngine
     {
         private ArtNetServer? _artNetServer;
+        private ArtnetHttpServer? _httpServer;
         internal IDmxInterface? _dmxInterface; // Primary/first interface for backward compatibility
         private bool _isRunning;
 
@@ -21,6 +24,14 @@ namespace ArtnetNode.Core
 
         public List<DmxInterfaceConfig> Interfaces { get; } = new List<DmxInterfaceConfig>();
         internal List<DmxInterfaceInstance> ActiveInterfaces { get; } = new List<DmxInterfaceInstance>();
+
+        // Cached DMX status for overrides & dashboard
+        private readonly Dictionary<int, byte[]> _lastReceivedDmx = new Dictionary<int, byte[]>();
+
+        // Manual Override properties
+        public bool ManualOverrideActive { get; private set; } = false;
+        public byte[] ManualOverrideValues { get; } = new byte[512];
+        public bool[] ManualOverrideFlags { get; } = new bool[512];
 
         // Events
         public event EventHandler<DmxEventArgs>? DmxReceived;
@@ -37,19 +48,22 @@ namespace ArtnetNode.Core
             set
             {
                 _blackoutActive = value;
-                if (_blackoutActive && _isRunning)
+                if (_isRunning)
                 {
                     foreach (var inst in ActiveInterfaces)
                     {
                         try
                         {
-                            inst.Interface.SendDmx(new byte[512]);
+                            byte[] finalDmx = GetCurrentMergedDmx(inst.Config.Universe);
+                            inst.Interface.SendDmx(finalDmx);
+                            DmxReceived?.Invoke(this, new DmxEventArgs(finalDmx, inst.Config.Universe, "LocalBlackout", 0));
                         }
                         catch
                         {
                             // Send failures are handled in the packet reception/reconnection flow
                         }
                     }
+                    StatusChanged?.Invoke(this, EventArgs.Empty);
                 }
             }
         }
@@ -57,6 +71,7 @@ namespace ArtnetNode.Core
         public bool IsRunning => _isRunning;
         public long TotalPacketsReceived => _artNetServer?.TotalPacketsReceived ?? 0;
         public string LastSenderIpAddress => _artNetServer?.LastSenderIpAddress ?? "N/A";
+        public int HttpPort => _httpServer?.Port ?? 0;
 
         public string ConnectionStatus
         {
@@ -71,6 +86,123 @@ namespace ArtnetNode.Core
                 int reconnectingCount = ActiveInterfaces.Count(i => i.IsReconnecting);
                 return $"{connectedCount}/{ActiveInterfaces.Count} Connessi (Riconnessione: {reconnectingCount})";
             }
+        }
+
+        public void SetManualOverride(int universe, int channelIndex, byte value)
+        {
+            if (channelIndex < 0 || channelIndex >= 512) return;
+            ManualOverrideActive = true;
+            ManualOverrideFlags[channelIndex] = true;
+            ManualOverrideValues[channelIndex] = value;
+            
+            // Update DMX interface immediately
+            var targetInterfaces = ActiveInterfaces.Where(i => i.Config.Universe == universe).ToList();
+            foreach (var inst in targetInterfaces)
+            {
+                try
+                {
+                    byte[] merged = GetCurrentMergedDmx(universe);
+                    inst.Interface.SendDmx(merged);
+                }
+                catch (Exception)
+                {
+                    HandleDisconnectAndScheduleReconnect(inst);
+                }
+            }
+            
+            // Trigger DmxReceived to keep WPF and Web client grids in sync
+            byte[] finalDmx = GetCurrentMergedDmx(universe);
+            DmxReceived?.Invoke(this, new DmxEventArgs(finalDmx, universe, "LocalOverride", 0));
+            StatusChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void ClearManualOverrides()
+        {
+            ManualOverrideActive = false;
+            Array.Clear(ManualOverrideFlags, 0, 512);
+            Array.Clear(ManualOverrideValues, 0, 512);
+            
+            foreach (var inst in ActiveInterfaces)
+            {
+                try
+                {
+                    byte[] merged = GetCurrentMergedDmx(inst.Config.Universe);
+                    inst.Interface.SendDmx(merged);
+                    DmxReceived?.Invoke(this, new DmxEventArgs(merged, inst.Config.Universe, "LocalOverride", 0));
+                }
+                catch (Exception)
+                {
+                    HandleDisconnectAndScheduleReconnect(inst);
+                }
+            }
+            StatusChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void ClearManualOverrideChannel(int universe, int channelIndex)
+        {
+            if (channelIndex < 0 || channelIndex >= 512) return;
+            ManualOverrideFlags[channelIndex] = false;
+            ManualOverrideValues[channelIndex] = 0;
+            
+            bool anyFlags = false;
+            for (int i = 0; i < 512; i++)
+            {
+                if (ManualOverrideFlags[i])
+                {
+                    anyFlags = true;
+                    break;
+                }
+            }
+            if (!anyFlags)
+            {
+                ManualOverrideActive = false;
+            }
+            
+            var targetInterfaces = ActiveInterfaces.Where(i => i.Config.Universe == universe).ToList();
+            foreach (var inst in targetInterfaces)
+            {
+                try
+                {
+                    byte[] merged = GetCurrentMergedDmx(universe);
+                    inst.Interface.SendDmx(merged);
+                    DmxReceived?.Invoke(this, new DmxEventArgs(merged, universe, "LocalOverride", 0));
+                }
+                catch (Exception)
+                {
+                    HandleDisconnectAndScheduleReconnect(inst);
+                }
+            }
+            StatusChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public byte[] GetCurrentMergedDmx(int universe)
+        {
+            byte[] dmx = new byte[512];
+            lock (_lastReceivedDmx)
+            {
+                if (_lastReceivedDmx.TryGetValue(universe, out var cache))
+                {
+                    Array.Copy(cache, 0, dmx, 0, 512);
+                }
+            }
+            
+            if (ManualOverrideActive)
+            {
+                for (int i = 0; i < 512; i++)
+                {
+                    if (ManualOverrideFlags[i])
+                    {
+                        dmx[i] = ManualOverrideValues[i];
+                    }
+                }
+            }
+            
+            if (_blackoutActive)
+            {
+                Array.Clear(dmx, 0, 512);
+            }
+            
+            return dmx;
         }
 
         public void Start()
@@ -181,6 +313,7 @@ namespace ArtnetNode.Core
                 }
 
                 _artNetServer.DmxReceived += ArtNetServer_DmxReceived;
+                _artNetServer.PollReceived += ArtNetServer_PollReceived;
                 _artNetServer.ErrorOccurred += ArtNetServer_ErrorOccurred;
                 _artNetServer.LogMessage += ArtNetServer_LogMessage;
 
@@ -189,6 +322,11 @@ namespace ArtnetNode.Core
                 if (_artNetServer.IsRunning)
                 {
                     _isRunning = true;
+                    
+                    // Start embedded HTTP Web Dashboard Server
+                    _httpServer = new ArtnetHttpServer(this);
+                    _httpServer.Start(8080);
+
                     StatusChanged?.Invoke(this, EventArgs.Empty);
                 }
                 else
@@ -201,6 +339,11 @@ namespace ArtnetNode.Core
                 _isRunning = false;
                 CleanupInterfaces();
                 _artNetServer = null;
+                if (_httpServer != null)
+                {
+                    _httpServer.Stop();
+                    _httpServer = null;
+                }
                 ErrorOccurred?.Invoke(this, ex.Message);
                 throw;
             }
@@ -237,10 +380,17 @@ namespace ArtnetNode.Core
 
             Log("Arresto del sistema Art-Net Node...");
 
+            if (_httpServer != null)
+            {
+                _httpServer.Stop();
+                _httpServer = null;
+            }
+
             if (_artNetServer != null)
             {
                 _artNetServer.Stop();
                 _artNetServer.DmxReceived -= ArtNetServer_DmxReceived;
+                _artNetServer.PollReceived -= ArtNetServer_PollReceived;
                 _artNetServer.ErrorOccurred -= ArtNetServer_ErrorOccurred;
                 _artNetServer.LogMessage -= ArtNetServer_LogMessage;
                 _artNetServer = null;
@@ -256,19 +406,26 @@ namespace ArtnetNode.Core
         {
             try
             {
+                // Update cache
+                lock (_lastReceivedDmx)
+                {
+                    if (!_lastReceivedDmx.TryGetValue(e.Universe, out var cache))
+                    {
+                        cache = new byte[512];
+                        _lastReceivedDmx[e.Universe] = cache;
+                    }
+                    int copyLen = Math.Min(e.DmxData.Length, 512);
+                    Array.Clear(cache, 0, 512);
+                    Array.Copy(e.DmxData, 0, cache, 0, copyLen);
+                }
+
                 var targetInterfaces = ActiveInterfaces.Where(i => i.Config.Universe == e.Universe).ToList();
                 foreach (var inst in targetInterfaces)
                 {
                     try
                     {
-                        if (_blackoutActive)
-                        {
-                            inst.Interface.SendDmx(new byte[512]);
-                        }
-                        else
-                        {
-                            inst.Interface.SendDmx(e.DmxData);
-                        }
+                        byte[] finalData = GetCurrentMergedDmx(e.Universe);
+                        inst.Interface.SendDmx(finalData);
                     }
                     catch (Exception)
                     {
@@ -281,8 +438,211 @@ namespace ArtnetNode.Core
                 // General error
             }
 
-            // Forward event upwards
-            DmxReceived?.Invoke(this, e);
+            // Forward event upwards with merged data
+            byte[] mergedDmx = GetCurrentMergedDmx(e.Universe);
+            DmxReceived?.Invoke(this, new DmxEventArgs(mergedDmx, e.Universe, e.SenderIp, e.Sequence));
+        }
+
+        private void ArtNetServer_PollReceived(object? sender, ArtPollEventArgs e)
+        {
+            if (_artNetServer == null) return;
+            
+            try
+            {
+                // Construct ArtPollReply packet (239 bytes)
+                byte[] reply = new byte[239];
+                
+                // 1. ID: "Art-Net\0"
+                byte[] id = Encoding.ASCII.GetBytes("Art-Net\0");
+                Array.Copy(id, 0, reply, 0, Math.Min(id.Length, 8));
+                
+                // 2. OpCode: OpPollReply (0x2100 -> little endian: 0x00, 0x21)
+                reply[8] = 0x00;
+                reply[9] = 0x21;
+                
+                // 3. IpAddress: 4 bytes
+                IPAddress localIp = GetActiveLocalIp(e.SenderIp);
+                byte[] ipBytes = localIp.GetAddressBytes();
+                Array.Copy(ipBytes, 0, reply, 10, 4);
+                
+                // 4. Port: 2 bytes (little endian: 6454 -> 0x3A, 0x19)
+                reply[14] = 0x3A;
+                reply[15] = 0x19;
+                
+                // 5. VersInfo: 2 bytes (Firmware version, big endian: 1.0 -> 0x01, 0x00)
+                reply[16] = 0x01;
+                reply[17] = 0x00;
+                
+                // 6. NetSwitch: 1 byte (Net universe, bits 8-14 of first active universe or 0)
+                int firstUniverse = ActiveInterfaces.Count > 0 ? ActiveInterfaces[0].Config.Universe : TargetUniverse;
+                reply[18] = (byte)((firstUniverse >> 8) & 0x7F);
+                
+                // 7. SubSwitch: 1 byte (Subnet, bits 4-7. Usually 0)
+                reply[19] = (byte)((firstUniverse >> 4) & 0x0F);
+                
+                // 8. Oem: 2 bytes (OEM code, e.g. 0x00FF -> big endian: 0x00, 0xFF)
+                reply[20] = 0x00;
+                reply[21] = 0xFF;
+                
+                // 9. UbeaVersion: 1 byte (0)
+                reply[22] = 0x00;
+                
+                // 10. Status1: 1 byte (Indicator normal state -> 0x08)
+                reply[23] = 0x08;
+                
+                // 11. EstaMan: 2 bytes (ESTA code, little-endian: VibeCodders -> 0x56, 0x43)
+                reply[24] = 0x56;
+                reply[25] = 0x43;
+                
+                // 12. ShortName: 18 bytes (Null-terminated ASCII)
+                string shortName = "Artnet Node";
+                byte[] shortNameBytes = Encoding.ASCII.GetBytes(shortName);
+                Array.Copy(shortNameBytes, 0, reply, 26, Math.Min(shortNameBytes.Length, 17));
+                
+                // 13. LongName: 64 bytes (Null-terminated ASCII)
+                string longName = "Art-Net to USB DMX Gateway Server";
+                byte[] longNameBytes = Encoding.ASCII.GetBytes(longName);
+                Array.Copy(longNameBytes, 0, reply, 44, Math.Min(longNameBytes.Length, 63));
+                
+                // 14. NodeReport: 64 bytes
+                string nodeReport = $"RC_OK - {ActiveInterfaces.Count} port(s) active";
+                byte[] reportBytes = Encoding.ASCII.GetBytes(nodeReport);
+                Array.Copy(reportBytes, 0, reply, 108, Math.Min(reportBytes.Length, 63));
+                
+                // 15. NumPorts: 2 bytes (Big endian. Max 4)
+                int numPorts = Math.Clamp(ActiveInterfaces.Count, 0, 4);
+                reply[172] = 0x00;
+                reply[173] = (byte)numPorts;
+                
+                // 16. PortTypes: 4 bytes (For each of the 4 ports. DMX output: 0x80)
+                for (int i = 0; i < 4; i++)
+                {
+                    reply[174 + i] = i < numPorts ? (byte)0x80 : (byte)0x00;
+                }
+                
+                // 17. GoodInput: 4 bytes (all 0)
+                // 18. GoodOutput: 4 bytes (If active: 0x80)
+                for (int i = 0; i < 4; i++)
+                {
+                    if (i < numPorts)
+                    {
+                        var inst = ActiveInterfaces[i];
+                        reply[182 + i] = (inst.Interface.IsConnected && !inst.IsReconnecting) ? (byte)0x80 : (byte)0x00;
+                    }
+                    else
+                    {
+                        reply[182 + i] = 0x00;
+                    }
+                }
+                
+                // 19. PortAddressIn: 4 bytes (all 0)
+                // 20. PortAddressOut: 4 bytes (Lower 4 bits of universe: universe & 0x0F)
+                for (int i = 0; i < 4; i++)
+                {
+                    if (i < numPorts)
+                    {
+                        reply[190 + i] = (byte)(ActiveInterfaces[i].Config.Universe & 0x0F);
+                    }
+                    else
+                    {
+                        reply[190 + i] = 0x00;
+                    }
+                }
+                
+                // 21. Video: 1 byte (0)
+                // 22. Macro: 1 byte (0)
+                // 23. Bind: 1 byte (0)
+                // 24. Style: 1 byte (Style of node: 0x01 = StNode)
+                reply[197] = 0x01;
+                
+                // 25. Mac: 6 bytes
+                byte[] macBytes = GetMacAddress();
+                Array.Copy(macBytes, 0, reply, 198, 6);
+                
+                // 26. BindIp: 4 bytes
+                Array.Copy(ipBytes, 0, reply, 204, 4);
+                
+                // 27. BindIndex: 1 byte (1)
+                reply[208] = 0x01;
+                
+                // 28. Status2: 1 byte (0x08)
+                reply[209] = 0x08;
+                
+                // Send unicast reply back to sender
+                _artNetServer.SendPacket(reply, e.SenderIp, e.SenderPort);
+            }
+            catch (Exception ex)
+            {
+                Log($"[ERRORE POLL] Errore nell'invio del pacchetto ArtPollReply: {ex.Message}");
+            }
+        }
+
+        private IPAddress GetActiveLocalIp(string targetIp)
+        {
+            if (IPAddress.TryParse(BindIpAddress, out var ip) && !ip.Equals(IPAddress.Any) && !ip.Equals(IPAddress.IPv6Any))
+            {
+                return ip;
+            }
+            
+            try
+            {
+                using (Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0))
+                {
+                    socket.Connect(targetIp, 6454);
+                    if (socket.LocalEndPoint is IPEndPoint endPoint)
+                    {
+                        return endPoint.Address;
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore socket connect
+            }
+
+            try
+            {
+                string hostName = Dns.GetHostName();
+                IPHostEntry host = Dns.GetHostEntry(hostName);
+                foreach (IPAddress address in host.AddressList)
+                {
+                    if (address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(address))
+                    {
+                        return address;
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore DNS
+            }
+
+            return IPAddress.Loopback;
+        }
+
+        private byte[] GetMacAddress()
+        {
+            try
+            {
+                foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus == OperationalStatus.Up && 
+                        (ni.NetworkInterfaceType == NetworkInterfaceType.Ethernet || 
+                         ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211))
+                    {
+                        byte[] address = ni.GetPhysicalAddress().GetAddressBytes();
+                        if (address.Length == 6)
+                        {
+                            return address;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore
+            }
+            return new byte[] { 0x00, 0x0B, 0xAD, 0xC0, 0xFF, 0xEE };
         }
 
         private void HandleDisconnectAndScheduleReconnect(DmxInterfaceInstance inst)
@@ -345,9 +705,14 @@ namespace ArtnetNode.Core
             LogMessage?.Invoke(this, message);
         }
 
-        private void Log(string message)
+        internal void Log(string message)
         {
             LogMessage?.Invoke(this, message);
+        }
+
+        internal void RaiseError(string errorMessage)
+        {
+            ErrorOccurred?.Invoke(this, errorMessage);
         }
     }
 
