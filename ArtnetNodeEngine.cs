@@ -8,7 +8,7 @@ namespace ArtnetNode
     public class ArtnetNodeEngine
     {
         private ArtNetServer? _artNetServer;
-        private IDmxInterface? _dmxInterface;
+        internal IDmxInterface? _dmxInterface;
         private bool _isRunning;
 
         // Configuration
@@ -24,10 +24,44 @@ namespace ArtnetNode
         public event EventHandler<string>? LogMessage;
         public event EventHandler? StatusChanged;
 
+        private bool _blackoutActive = false;
+        private Timer? _reconnectTimer;
+        private readonly object _reconnectLock = new object();
+        private bool _isReconnecting = false;
+
+        public bool BlackoutActive
+        {
+            get => _blackoutActive;
+            set
+            {
+                _blackoutActive = value;
+                if (_blackoutActive && _isRunning)
+                {
+                    try
+                    {
+                        _dmxInterface?.SendDmx(new byte[512]);
+                    }
+                    catch
+                    {
+                        // Send failures are handled in the packet reception/reconnection flow
+                    }
+                }
+            }
+        }
+
         public bool IsRunning => _isRunning;
         public long TotalPacketsReceived => _artNetServer?.TotalPacketsReceived ?? 0;
         public string LastSenderIpAddress => _artNetServer?.LastSenderIpAddress ?? "N/A";
-        public string ConnectionStatus => _dmxInterface?.ConnectionStatus ?? "Sconnesso";
+
+        public string ConnectionStatus
+        {
+            get
+            {
+                if (_isReconnecting)
+                    return "Riconnessione in corso...";
+                return _dmxInterface?.ConnectionStatus ?? "Sconnesso";
+            }
+        }
 
         public void Start()
         {
@@ -52,11 +86,46 @@ namespace ArtnetNode
                     case "opendmx":
                         _dmxInterface = new OpenDmxInterface();
                         break;
+                    case "enttec_mk2":
+                    case "enttecmk2":
+                        _dmxInterface = new EnttecProMk2DmxInterface
+                        {
+                            UniversePort = (TargetUniverse % 2) == 0 ? 1 : 2
+                        };
+                        break;
+                    case "ftdi_generic":
+                    case "ftdigeneric":
+                        _dmxInterface = new FtdiGenericDmxInterface();
+                        break;
+                    case "udmx":
+                        _dmxInterface = new UDmxInterface();
+                        break;
+                    case "dmx4all":
+                        _dmxInterface = new Dmx4AllUsbInterface();
+                        break;
+                    case "chauvet":
+                        _dmxInterface = new ChauvetUsbDmxInterface();
+                        break;
+                    case "eurolite_pro":
+                    case "eurolitepro":
+                        _dmxInterface = new EuroliteUsbDmxInterface();
+                        break;
+                    case "hid_dmx":
+                    case "hiddmx":
+                        _dmxInterface = new HidDmxInterface();
+                        break;
                     default:
                         throw new ArgumentException($"Driver DMX non riconosciuto: '{DriverType}'");
                 }
 
-                if ((_dmxInterface is EnttecProDmxInterface || _dmxInterface is OpenDmxInterface) && string.IsNullOrEmpty(ComPort))
+                bool needsCom = _dmxInterface is EnttecProDmxInterface 
+                    || _dmxInterface is OpenDmxInterface
+                    || _dmxInterface is EnttecProMk2DmxInterface
+                    || _dmxInterface is FtdiGenericDmxInterface
+                    || _dmxInterface is Dmx4AllUsbInterface
+                    || _dmxInterface is EuroliteUsbDmxInterface;
+
+                if (needsCom && string.IsNullOrEmpty(ComPort))
                 {
                     throw new ArgumentException("Il nome della porta COM non può essere vuoto per il driver selezionato.");
                 }
@@ -110,6 +179,16 @@ namespace ArtnetNode
 
             Log("Arresto del sistema Art-Net Node...");
 
+            lock (_reconnectLock)
+            {
+                if (_reconnectTimer != null)
+                {
+                    _reconnectTimer.Dispose();
+                    _reconnectTimer = null;
+                }
+                _isReconnecting = false;
+            }
+
             if (_artNetServer != null)
             {
                 _artNetServer.Stop();
@@ -132,11 +211,77 @@ namespace ArtnetNode
 
         private void ArtNetServer_DmxReceived(object? sender, DmxEventArgs e)
         {
-            // Forward DMX to physical DMX interface immediately
-            _dmxInterface?.SendDmx(e.DmxData);
+            try
+            {
+                if (_dmxInterface != null)
+                {
+                    if (_blackoutActive)
+                    {
+                        _dmxInterface.SendDmx(new byte[512]);
+                    }
+                    else
+                    {
+                        _dmxInterface.SendDmx(e.DmxData);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                HandleDisconnectAndScheduleReconnect();
+            }
 
             // Forward event upwards
             DmxReceived?.Invoke(this, e);
+        }
+
+        private void HandleDisconnectAndScheduleReconnect()
+        {
+            lock (_reconnectLock)
+            {
+                if (!_isRunning || _isReconnecting) return;
+                
+                _isReconnecting = true;
+                Log($"[WARNING] Connessione DMX persa. Stato driver: {_dmxInterface?.ConnectionStatus}. Avvio del loop di riconnessione automatica...");
+                
+                _reconnectTimer = new Timer(ReconnectCallback, null, 1000, 3000);
+            }
+            StatusChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        private void ReconnectCallback(object? state)
+        {
+            lock (_reconnectLock)
+            {
+                if (!_isRunning)
+                {
+                    _reconnectTimer?.Dispose();
+                    _reconnectTimer = null;
+                    _isReconnecting = false;
+                    return;
+                }
+            }
+
+            try
+            {
+                Log($"Tentativo di riconnessione a {ComPort}...");
+                _dmxInterface?.Connect(ComPort);
+
+                if (_dmxInterface != null && _dmxInterface.IsConnected)
+                {
+                    Log($"[SUCCESSO] Riconnessione completata con successo! Stato: {_dmxInterface.ConnectionStatus}");
+                    lock (_reconnectLock)
+                    {
+                        _reconnectTimer?.Dispose();
+                        _reconnectTimer = null;
+                        _isReconnecting = false;
+                    }
+                    StatusChanged?.Invoke(this, EventArgs.Empty);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Tentativo di riconnessione fallito: {ex.Message}");
+            }
         }
 
         private void ArtNetServer_ErrorOccurred(object? sender, string errorMessage)

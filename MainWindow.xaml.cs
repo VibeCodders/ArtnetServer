@@ -244,8 +244,10 @@ namespace Artnet
         {
             if (ComboComPort == null || BtnRefreshCom == null) return;
 
-            // Enable COM selection only if a physical USB DMX interface is selected
-            bool needsCom = ComboDmxDriver.SelectedIndex == 1 || ComboDmxDriver.SelectedIndex == 2;
+            // Enable COM selection for COM-based drivers:
+            // 1: Enttec Pro, 2: Open DMX, 3: Enttec Pro Mk2, 4: FTDI Generic, 6: DMX4ALL, 8: Eurolite Pro
+            int idx = ComboDmxDriver.SelectedIndex;
+            bool needsCom = idx == 1 || idx == 2 || idx == 3 || idx == 4 || idx == 6 || idx == 8;
             ComboComPort.IsEnabled = needsCom;
             BtnRefreshCom.IsEnabled = needsCom;
         }
@@ -288,7 +290,7 @@ namespace Artnet
                 int driverIndex = ComboDmxDriver.SelectedIndex;
                 string portName = ComboComPort.SelectedItem?.ToString() ?? "";
 
-                if ((driverIndex == 1 || driverIndex == 2) && string.IsNullOrEmpty(portName))
+                if ((driverIndex == 1 || driverIndex == 2 || driverIndex == 3 || driverIndex == 4 || driverIndex == 6 || driverIndex == 8) && string.IsNullOrEmpty(portName))
                 {
                     MessageBox.Show("Selezionare una porta COM valida per l'interfaccia hardware scelta.", "Errore COM", MessageBoxButton.OK, MessageBoxImage.Warning);
                     Log("[ERRORE] Avvio annullato: nessuna porta COM selezionata.");
@@ -300,6 +302,13 @@ namespace Artnet
                     0 => "simulation",
                     1 => "enttec",
                     2 => "open",
+                    3 => "enttec_mk2",
+                    4 => "ftdi_generic",
+                    5 => "udmx",
+                    6 => "dmx4all",
+                    7 => "chauvet",
+                    8 => "eurolite_pro",
+                    9 => "hid_dmx",
                     _ => "simulation"
                 };
 
@@ -332,6 +341,7 @@ namespace Artnet
                     
                     BtnPlay.IsEnabled = false;
                     BtnStop.IsEnabled = true;
+                    BtnBlackout.IsEnabled = true;
 
                     // Start UI timers
                     _uiUpdateTimer.Start();
@@ -387,12 +397,21 @@ namespace Artnet
             ComboUniverse.IsEnabled = true;
             ComboDmxDriver.IsEnabled = true;
             
-            bool needsCom = ComboDmxDriver.SelectedIndex == 1 || ComboDmxDriver.SelectedIndex == 2;
+            int idx = ComboDmxDriver.SelectedIndex;
+            bool needsCom = idx == 1 || idx == 2 || idx == 3 || idx == 4 || idx == 6 || idx == 8;
             ComboComPort.IsEnabled = needsCom;
             BtnRefreshCom.IsEnabled = needsCom;
 
             BtnPlay.IsEnabled = true;
             BtnStop.IsEnabled = false;
+
+            if (BtnBlackout != null)
+            {
+                BtnBlackout.IsChecked = false;
+                BtnBlackout.IsEnabled = false;
+                BtnBlackout.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(38, 28, 8));
+                BtnBlackout.BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(178, 106, 0));
+            }
 
             TxtFps.Text = "0";
             _fpsPacketCount = 0;
@@ -511,6 +530,30 @@ namespace Artnet
                 LedGlow.Color = Color.FromRgb(255, 23, 68);
                 TxtStatusLabel.Text = "ERRORE";
                 TxtStatusLabel.Foreground = new SolidColorBrush(Color.FromRgb(255, 23, 68));
+            }
+        }
+
+        private void BtnBlackout_Click(object sender, RoutedEventArgs e)
+        {
+            if (_engine != null && BtnBlackout != null)
+            {
+                bool isActive = BtnBlackout.IsChecked ?? false;
+                _engine.BlackoutActive = isActive;
+                
+                if (isActive)
+                {
+                    // Style when active (bright orange glow)
+                    BtnBlackout.Background = new SolidColorBrush(Color.FromRgb(128, 60, 0));
+                    BtnBlackout.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 145, 0));
+                    Log("[INFO] Modalità BLACKOUT attivata. Tutti i canali DMX sono stati azzerati.");
+                }
+                else
+                {
+                    // Style when inactive (muted dark orange)
+                    BtnBlackout.Background = new SolidColorBrush(Color.FromRgb(38, 28, 8));
+                    BtnBlackout.BorderBrush = new SolidColorBrush(Color.FromRgb(178, 106, 0));
+                    Log("[INFO] Modalità BLACKOUT disattivata. Ripristino controllo Art-Net.");
+                }
             }
         }
     }

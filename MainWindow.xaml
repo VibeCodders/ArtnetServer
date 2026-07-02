@@ -188,6 +188,13 @@
                         <ComboBoxItem Content="Simulatore (Senza Hardware)"/>
                         <ComboBoxItem Content="Enttec DMX USB Pro" IsSelected="True"/>
                         <ComboBoxItem Content="Open DMX USB"/>
+                        <ComboBoxItem Content="Enttec DMX USB Pro Mk2"/>
+                        <ComboBoxItem Content="FTDI Generic DMX (OpenDMX clone)"/>
+                        <ComboBoxItem Content="uDMX (Eurolite / Velleman / clone)"/>
+                        <ComboBoxItem Content="DMX4ALL USB Interface"/>
+                        <ComboBoxItem Content="Chauvet Xpress USB"/>
+                        <ComboBoxItem Content="Eurolite USB-DMX512 Pro"/>
+                        <ComboBoxItem Content="Generic HID DMX (fallback)"/>
                     </ComboBox>
 
                     <!-- COM Port Selection -->
@@ -211,6 +218,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     
@@ -251,8 +259,21 @@
                         </Button>
                     </Grid>
 
+                    <!-- BLACKOUT Button -->
+                    <ToggleButton x:Name="BtnBlackout" Grid.Row="2" Height="40" Margin="0,12,0,0" Background="#261C08" BorderBrush="#B26A00" BorderThickness="1.5" Click="BtnBlackout_Click" IsEnabled="False">
+                        <ToggleButton.Resources>
+                            <Style TargetType="Border">
+                                <Setter Property="CornerRadius" Value="10"/>
+                            </Style>
+                        </ToggleButton.Resources>
+                        <StackPanel Orientation="Horizontal">
+                            <Path Data="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4M11,7V13H13V7H11M11,15V17H13V15H11Z" Fill="{StaticResource AccentOrange}" Stretch="Uniform" Width="16" Height="16" Margin="0,0,8,0"/>
+                            <TextBlock Text="BLACKOUT" Foreground="{StaticResource AccentOrange}" FontWeight="Bold" FontSize="13" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </ToggleButton>
+
                     <!-- Realtime Statistics -->
-                    <StackPanel Grid.Row="2" Margin="0,16,0,0">
+                    <StackPanel Grid.Row="3" Margin="0,16,0,0">
                         <Separator Background="{StaticResource PanelBorder}" Margin="0,0,0,12"/>
                         
                         <Grid Margin="0,0,0,6">
