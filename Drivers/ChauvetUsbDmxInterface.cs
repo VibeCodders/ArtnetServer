@@ -1,6 +1,6 @@
 using System;
 
-namespace ArtnetNode
+namespace ArtnetNode.Drivers
 {
     public class ChauvetUsbDmxInterface : IDmxInterface
     {
@@ -33,3 +33,4 @@ namespace ArtnetNode
         }
     }
 }
+

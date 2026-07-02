@@ -2,9 +2,9 @@ using System;
 using System.IO.Ports;
 using System.Threading;
 
-namespace ArtnetNode
+namespace ArtnetNode.Drivers
 {
-    public class EnttecProMk2DmxInterface : IDmxInterface
+    public class EuroliteUsbDmxInterface : IDmxInterface
     {
         private SerialPort? _serialPort;
         private readonly object _lock = new object();
@@ -14,13 +14,10 @@ namespace ArtnetNode
         private bool _isTxRunning;
         private readonly byte[] _sharedBuffer = new byte[512];
 
-        // Universe Port mapping (1 or 2)
-        public int UniversePort { get; set; } = 1;
-
         public bool IsConnected => _serialPort != null && _serialPort.IsOpen;
 
         public string ConnectionStatus => IsConnected 
-            ? $"Connesso su {_serialPort?.PortName} (Enttec Pro Mk2, Porta {UniversePort})" 
+            ? $"Connesso su {_serialPort?.PortName} (Eurolite USB-DMX512 Pro)" 
             : "Sconnesso";
 
         public void Connect(string portName)
@@ -32,7 +29,7 @@ namespace ArtnetNode
                 if (string.IsNullOrEmpty(portName))
                     throw new ArgumentException("Il nome della porta COM non può essere vuoto.");
 
-                // Configure serial port for Enttec Pro Mk2 (115200 baud standard)
+                // Configure serial port for Eurolite Pro (Enttec Pro compatible protocol at 115200 baud)
                 _serialPort = new SerialPort(portName, 115200, Parity.None, 8, StopBits.One)
                 {
                     Handshake = Handshake.None,
@@ -54,7 +51,7 @@ namespace ArtnetNode
                 {
                     IsBackground = true,
                     Priority = ThreadPriority.Normal,
-                    Name = "EnttecProMk2TxThread"
+                    Name = "EuroliteProTxThread"
                 };
                 _txThread.Start();
             }
@@ -113,19 +110,16 @@ namespace ArtnetNode
 
         private void TxLoop()
         {
-            // Message format: 
+            // Message format (Enttec Pro compatible): 
             // Byte 0: 0x7E (Start of Message)
-            // Byte 1: Label (6 for Port 1, 134 for Port 2)
+            // Byte 1: 6 (Label: Output Only Send DMX Packet Request)
             // Byte 2-3: Data Length LSB, MSB (513 bytes: 1 byte DMX Start Code + 512 DMX channels)
             // Byte 4: 0x00 (DMX Start Code)
             // Byte 5..516: DMX Channel values
             // Byte 517: 0xE7 (End of Message)
             byte[] localBuffer = new byte[518];
             localBuffer[0] = 0x7E;
-            
-            // Choose label: 6 for Universe 1, 134 for Universe 2
-            byte label = (byte)(UniversePort == 2 ? 134 : 6);
-            localBuffer[1] = label;
+            localBuffer[1] = 6;
             
             int dataLength = 513;
             localBuffer[2] = (byte)(dataLength & 0xFF);        // LSB
@@ -158,10 +152,9 @@ namespace ArtnetNode
 
                 try
                 {
-                    // Write full DMX frame to Enttec Pro Mk2 hardware
                     port.Write(localBuffer, 0, localBuffer.Length);
 
-                    // Sleep to allow 115200 baud transmission (~45ms)
+                    // Sleep to allow 115200 baud transmission of 518 bytes (~45ms)
                     Thread.Sleep(45);
                 }
                 catch (Exception)
@@ -172,3 +165,4 @@ namespace ArtnetNode
         }
     }
 }
+

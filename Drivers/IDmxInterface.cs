@@ -1,6 +1,6 @@
 using System;
 
-namespace ArtnetNode
+namespace ArtnetNode.Drivers
 {
     public interface IDmxInterface
     {
@@ -11,3 +11,4 @@ namespace ArtnetNode
         string ConnectionStatus { get; }
     }
 }
+

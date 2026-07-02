@@ -1,6 +1,6 @@
 using System;
 
-namespace ArtnetNode
+namespace ArtnetNode.Core
 {
     public class DmxInterfaceConfig
     {

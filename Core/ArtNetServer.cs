@@ -4,7 +4,7 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace ArtnetNode
+namespace ArtnetNode.Core
 {
     public class DmxEventArgs : EventArgs
     {

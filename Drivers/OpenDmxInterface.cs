@@ -1,10 +1,11 @@
 using System;
+using System.Diagnostics;
 using System.IO.Ports;
 using System.Threading;
 
-namespace ArtnetNode
+namespace ArtnetNode.Drivers
 {
-    public class Dmx4AllUsbInterface : IDmxInterface
+    public class OpenDmxInterface : IDmxInterface
     {
         private SerialPort? _serialPort;
         private readonly object _lock = new object();
@@ -17,7 +18,7 @@ namespace ArtnetNode
         public bool IsConnected => _serialPort != null && _serialPort.IsOpen;
 
         public string ConnectionStatus => IsConnected 
-            ? $"Connesso su {_serialPort?.PortName} (DMX4ALL)" 
+            ? $"Connesso su {_serialPort?.PortName} (Open DMX)" 
             : "Sconnesso";
 
         public void Connect(string portName)
@@ -29,8 +30,8 @@ namespace ArtnetNode
                 if (string.IsNullOrEmpty(portName))
                     throw new ArgumentException("Il nome della porta COM non può essere vuoto.");
 
-                // Configure serial port for DMX4ALL: 38400 Baud, 8 data bits, 1 stop bit, no parity
-                _serialPort = new SerialPort(portName, 38400, Parity.None, 8, StopBits.One)
+                // Configure serial port for Open DMX: 250000 baud, 8 data bits, 2 stop bits, no parity
+                _serialPort = new SerialPort(portName, 250000, Parity.None, 8, StopBits.Two)
                 {
                     Handshake = Handshake.None,
                     WriteTimeout = 500
@@ -50,8 +51,8 @@ namespace ArtnetNode
                 _txThread = new Thread(TxLoop)
                 {
                     IsBackground = true,
-                    Priority = ThreadPriority.Normal,
-                    Name = "Dmx4AllTxThread"
+                    Priority = ThreadPriority.Highest, // High priority to reduce transmission jitter
+                    Name = "OpenDmxTxThread"
                 };
                 _txThread.Start();
             }
@@ -102,7 +103,8 @@ namespace ArtnetNode
         {
             lock (_lock)
             {
-                // Update shared buffer (up to 512 channels)
+                // Update shared buffer (up to 512 channels).
+                // Do not clear the rest of the buffer to preserve states of other channels
                 int copyLength = Math.Min(dmxData.Length, 512);
                 Array.Copy(dmxData, 0, _sharedBuffer, 0, copyLength);
             }
@@ -110,34 +112,8 @@ namespace ArtnetNode
 
         private void TxLoop()
         {
-            // Packets structure:
-            // Header: 0xFF
-            // Start Channel LSB, Start Channel MSB
-            // Length (max 255)
-            // Data bytes...
-            
-            // To transmit 512 channels, we split into 3 packets:
-            // Packet 1: Start 1 (0x01, 0x00), Count 255 (values 0..254) -> size 259 bytes
-            // Packet 2: Start 256 (0x00, 0x01), Count 255 (values 255..509) -> size 259 bytes
-            // Packet 3: Start 511 (0xFF, 0x01), Count 2 (values 510..511) -> size 6 bytes
-            
-            byte[] packet1 = new byte[259];
-            packet1[0] = 0xFF;
-            packet1[1] = 0x01; // Start channel 1 LSB
-            packet1[2] = 0x00; // Start channel 1 MSB
-            packet1[3] = 255;  // Count
-
-            byte[] packet2 = new byte[259];
-            packet2[0] = 0xFF;
-            packet2[1] = 0x00; // Start channel 256 LSB (256 & 0xFF = 0x00)
-            packet2[2] = 0x01; // Start channel 256 MSB (256 >> 8 = 0x01)
-            packet2[3] = 255;  // Count
-
-            byte[] packet3 = new byte[6];
-            packet3[0] = 0xFF;
-            packet3[1] = 0xFF; // Start channel 511 LSB (511 & 0xFF = 0xFF)
-            packet3[2] = 0x01; // Start channel 511 MSB (511 >> 8 = 0x01)
-            packet3[3] = 2;    // Count
+            byte[] localBuffer = new byte[513];
+            localBuffer[0] = 0x00; // DMX Start Code
 
             while (true)
             {
@@ -150,9 +126,7 @@ namespace ArtnetNode
                     port = _serialPort;
                     if (running && port != null && port.IsOpen)
                     {
-                        Array.Copy(_sharedBuffer, 0, packet1, 4, 255);
-                        Array.Copy(_sharedBuffer, 255, packet2, 4, 255);
-                        Array.Copy(_sharedBuffer, 510, packet3, 4, 2);
+                        Array.Copy(_sharedBuffer, 0, localBuffer, 1, 512);
                     }
                     else
                     {
@@ -165,20 +139,41 @@ namespace ArtnetNode
 
                 try
                 {
-                    // Write the 3 blocks sequentially
-                    port.Write(packet1, 0, packet1.Length);
-                    port.Write(packet2, 0, packet2.Length);
-                    port.Write(packet3, 0, packet3.Length);
+                    // 1. Generate BREAK (low for at least 88us)
+                    port.BreakState = true;
+                    HighResolutionDelay(100); // 100 microseconds delay
 
-                    // Sleep to allow transmission of 524 bytes at 38400 baud (~137ms)
-                    // We sleep 45ms to balance CPU cycles, and the serial port hardware queue handles buffer flow.
-                    Thread.Sleep(45);
+                    // 2. Generate MAB (Mark After Break - high for at least 8us)
+                    port.BreakState = false;
+                    HighResolutionDelay(12); // 12 microseconds delay
+
+                    // 3. Write data (513 bytes: start code + 512 DMX channels)
+                    port.Write(localBuffer, 0, localBuffer.Length);
+
+                    // Sleep to maintain stable frame rate (~30ms interval -> ~33 Hz)
+                    Thread.Sleep(30);
                 }
                 catch (Exception)
                 {
+                    // Sleep and retry if there's a temporary error
                     Thread.Sleep(100);
                 }
             }
         }
+
+        /// <summary>
+        /// Busy-waits using Stopwatch for high-precision delay in microseconds.
+        /// </summary>
+        private void HighResolutionDelay(double microseconds)
+        {
+            long ticks = (long)(microseconds * Stopwatch.Frequency / 1_000_000);
+            long startTicks = Stopwatch.GetTimestamp();
+            while (Stopwatch.GetTimestamp() - startTicks < ticks)
+            {
+                // Spin wait to keep high precision
+                Thread.SpinWait(1);
+            }
+        }
     }
 }
+

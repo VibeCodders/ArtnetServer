@@ -2,8 +2,9 @@ using System;
 using System.IO.Ports;
 using System.Net;
 using System.Net.Sockets;
+using ArtnetNode.Drivers;
 
-namespace ArtnetNode
+namespace ArtnetNode.Core
 {
     public class ArtnetNodeEngine
     {

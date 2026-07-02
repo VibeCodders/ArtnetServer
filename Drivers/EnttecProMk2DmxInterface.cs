@@ -1,11 +1,10 @@
 using System;
-using System.Diagnostics;
 using System.IO.Ports;
 using System.Threading;
 
-namespace ArtnetNode
+namespace ArtnetNode.Drivers
 {
-    public class FtdiGenericDmxInterface : IDmxInterface
+    public class EnttecProMk2DmxInterface : IDmxInterface
     {
         private SerialPort? _serialPort;
         private readonly object _lock = new object();
@@ -15,10 +14,13 @@ namespace ArtnetNode
         private bool _isTxRunning;
         private readonly byte[] _sharedBuffer = new byte[512];
 
+        // Universe Port mapping (1 or 2)
+        public int UniversePort { get; set; } = 1;
+
         public bool IsConnected => _serialPort != null && _serialPort.IsOpen;
 
         public string ConnectionStatus => IsConnected 
-            ? $"Connesso su {_serialPort?.PortName} (FTDI Generic DMX)" 
+            ? $"Connesso su {_serialPort?.PortName} (Enttec Pro Mk2, Porta {UniversePort})" 
             : "Sconnesso";
 
         public void Connect(string portName)
@@ -30,8 +32,8 @@ namespace ArtnetNode
                 if (string.IsNullOrEmpty(portName))
                     throw new ArgumentException("Il nome della porta COM non può essere vuoto.");
 
-                // Configure serial port for generic DMX: 250000 baud, 8 data bits, 2 stop bits, no parity
-                _serialPort = new SerialPort(portName, 250000, Parity.None, 8, StopBits.Two)
+                // Configure serial port for Enttec Pro Mk2 (115200 baud standard)
+                _serialPort = new SerialPort(portName, 115200, Parity.None, 8, StopBits.One)
                 {
                     Handshake = Handshake.None,
                     WriteTimeout = 500
@@ -51,8 +53,8 @@ namespace ArtnetNode
                 _txThread = new Thread(TxLoop)
                 {
                     IsBackground = true,
-                    Priority = ThreadPriority.Highest, // High priority for stable DMX timing
-                    Name = "FtdiGenericDmxTxThread"
+                    Priority = ThreadPriority.Normal,
+                    Name = "EnttecProMk2TxThread"
                 };
                 _txThread.Start();
             }
@@ -111,8 +113,26 @@ namespace ArtnetNode
 
         private void TxLoop()
         {
-            byte[] localBuffer = new byte[513];
-            localBuffer[0] = 0x00; // DMX Start Code
+            // Message format: 
+            // Byte 0: 0x7E (Start of Message)
+            // Byte 1: Label (6 for Port 1, 134 for Port 2)
+            // Byte 2-3: Data Length LSB, MSB (513 bytes: 1 byte DMX Start Code + 512 DMX channels)
+            // Byte 4: 0x00 (DMX Start Code)
+            // Byte 5..516: DMX Channel values
+            // Byte 517: 0xE7 (End of Message)
+            byte[] localBuffer = new byte[518];
+            localBuffer[0] = 0x7E;
+            
+            // Choose label: 6 for Universe 1, 134 for Universe 2
+            byte label = (byte)(UniversePort == 2 ? 134 : 6);
+            localBuffer[1] = label;
+            
+            int dataLength = 513;
+            localBuffer[2] = (byte)(dataLength & 0xFF);        // LSB
+            localBuffer[3] = (byte)((dataLength >> 8) & 0xFF); // MSB
+            
+            localBuffer[4] = 0x00; // DMX Start Code
+            localBuffer[517] = 0xE7; // End of Message
 
             while (true)
             {
@@ -125,7 +145,7 @@ namespace ArtnetNode
                     port = _serialPort;
                     if (running && port != null && port.IsOpen)
                     {
-                        Array.Copy(_sharedBuffer, 0, localBuffer, 1, 512);
+                        Array.Copy(_sharedBuffer, 0, localBuffer, 5, 512);
                     }
                     else
                     {
@@ -138,40 +158,18 @@ namespace ArtnetNode
 
                 try
                 {
-                    // 1. Generate BREAK (low for at least 88us)
-                    port.BreakState = true;
-                    HighResolutionDelay(100); // 100 microseconds delay
-
-                    // 2. Generate MAB (Mark After Break - high for at least 8us)
-                    port.BreakState = false;
-                    HighResolutionDelay(12); // 12 microseconds delay
-
-                    // 3. Write data (513 bytes: start code + 512 DMX channels)
+                    // Write full DMX frame to Enttec Pro Mk2 hardware
                     port.Write(localBuffer, 0, localBuffer.Length);
 
-                    // Sleep to maintain stable frame rate (~30ms interval -> ~33 Hz)
-                    Thread.Sleep(30);
+                    // Sleep to allow 115200 baud transmission (~45ms)
+                    Thread.Sleep(45);
                 }
                 catch (Exception)
                 {
-                    // Sleep and retry if there's a temporary error
                     Thread.Sleep(100);
                 }
             }
         }
-
-        /// <summary>
-        /// Busy-waits using Stopwatch for high-precision delay in microseconds.
-        /// </summary>
-        private void HighResolutionDelay(double microseconds)
-        {
-            long ticks = (long)(microseconds * Stopwatch.Frequency / 1_000_000);
-            long startTicks = Stopwatch.GetTimestamp();
-            while (Stopwatch.GetTimestamp() - startTicks < ticks)
-            {
-                // Spin wait to keep high precision
-                Thread.SpinWait(1);
-            }
-        }
     }
 }
+

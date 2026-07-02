@@ -1,6 +1,6 @@
 using System;
 
-namespace ArtnetNode
+namespace ArtnetNode.Drivers
 {
     public class SimulationDmxInterface : IDmxInterface
     {
@@ -30,3 +30,4 @@ namespace ArtnetNode
         }
     }
 }
+

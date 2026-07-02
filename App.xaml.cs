@@ -4,7 +4,8 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
-using ArtnetNode;
+using ArtnetNode.Core;
+using Artnet.Views;
 
 namespace Artnet;
 

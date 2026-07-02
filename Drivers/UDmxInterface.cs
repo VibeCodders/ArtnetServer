@@ -1,7 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 
-namespace ArtnetNode
+namespace ArtnetNode.Drivers
 {
     public class UDmxInterface : IDmxInterface
     {
@@ -96,3 +96,4 @@ namespace ArtnetNode
         }
     }
 }
+

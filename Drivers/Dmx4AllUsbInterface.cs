@@ -2,9 +2,9 @@ using System;
 using System.IO.Ports;
 using System.Threading;
 
-namespace ArtnetNode
+namespace ArtnetNode.Drivers
 {
-    public class EnttecProDmxInterface : IDmxInterface
+    public class Dmx4AllUsbInterface : IDmxInterface
     {
         private SerialPort? _serialPort;
         private readonly object _lock = new object();
@@ -17,7 +17,7 @@ namespace ArtnetNode
         public bool IsConnected => _serialPort != null && _serialPort.IsOpen;
 
         public string ConnectionStatus => IsConnected 
-            ? $"Connesso su {_serialPort?.PortName} (Enttec Pro)" 
+            ? $"Connesso su {_serialPort?.PortName} (DMX4ALL)" 
             : "Sconnesso";
 
         public void Connect(string portName)
@@ -29,8 +29,8 @@ namespace ArtnetNode
                 if (string.IsNullOrEmpty(portName))
                     throw new ArgumentException("Il nome della porta COM non può essere vuoto.");
 
-                // Configure serial port for Enttec Pro (115200 baud is standard/stable for host communication)
-                _serialPort = new SerialPort(portName, 115200, Parity.None, 8, StopBits.One)
+                // Configure serial port for DMX4ALL: 38400 Baud, 8 data bits, 1 stop bit, no parity
+                _serialPort = new SerialPort(portName, 38400, Parity.None, 8, StopBits.One)
                 {
                     Handshake = Handshake.None,
                     WriteTimeout = 500
@@ -51,7 +51,7 @@ namespace ArtnetNode
                 {
                     IsBackground = true,
                     Priority = ThreadPriority.Normal,
-                    Name = "EnttecProTxThread"
+                    Name = "Dmx4AllTxThread"
                 };
                 _txThread.Start();
             }
@@ -110,23 +110,34 @@ namespace ArtnetNode
 
         private void TxLoop()
         {
-            // Message format: 
-            // Byte 0: 0x7E (Start of Message)
-            // Byte 1: 6 (Label: Output Only Send DMX Packet Request)
-            // Byte 2-3: Data Length LSB, MSB (513 bytes: 1 byte DMX Start Code + 512 DMX channels)
-            // Byte 4: 0x00 (DMX Start Code)
-            // Byte 5..516: DMX Channel values
-            // Byte 517: 0xE7 (End of Message)
-            byte[] localBuffer = new byte[518];
-            localBuffer[0] = 0x7E;
-            localBuffer[1] = 6;
+            // Packets structure:
+            // Header: 0xFF
+            // Start Channel LSB, Start Channel MSB
+            // Length (max 255)
+            // Data bytes...
             
-            int dataLength = 513;
-            localBuffer[2] = (byte)(dataLength & 0xFF);        // LSB
-            localBuffer[3] = (byte)((dataLength >> 8) & 0xFF); // MSB
+            // To transmit 512 channels, we split into 3 packets:
+            // Packet 1: Start 1 (0x01, 0x00), Count 255 (values 0..254) -> size 259 bytes
+            // Packet 2: Start 256 (0x00, 0x01), Count 255 (values 255..509) -> size 259 bytes
+            // Packet 3: Start 511 (0xFF, 0x01), Count 2 (values 510..511) -> size 6 bytes
             
-            localBuffer[4] = 0x00; // DMX Start Code
-            localBuffer[517] = 0xE7; // End of Message
+            byte[] packet1 = new byte[259];
+            packet1[0] = 0xFF;
+            packet1[1] = 0x01; // Start channel 1 LSB
+            packet1[2] = 0x00; // Start channel 1 MSB
+            packet1[3] = 255;  // Count
+
+            byte[] packet2 = new byte[259];
+            packet2[0] = 0xFF;
+            packet2[1] = 0x00; // Start channel 256 LSB (256 & 0xFF = 0x00)
+            packet2[2] = 0x01; // Start channel 256 MSB (256 >> 8 = 0x01)
+            packet2[3] = 255;  // Count
+
+            byte[] packet3 = new byte[6];
+            packet3[0] = 0xFF;
+            packet3[1] = 0xFF; // Start channel 511 LSB (511 & 0xFF = 0xFF)
+            packet3[2] = 0x01; // Start channel 511 MSB (511 >> 8 = 0x01)
+            packet3[3] = 2;    // Count
 
             while (true)
             {
@@ -139,7 +150,9 @@ namespace ArtnetNode
                     port = _serialPort;
                     if (running && port != null && port.IsOpen)
                     {
-                        Array.Copy(_sharedBuffer, 0, localBuffer, 5, 512);
+                        Array.Copy(_sharedBuffer, 0, packet1, 4, 255);
+                        Array.Copy(_sharedBuffer, 255, packet2, 4, 255);
+                        Array.Copy(_sharedBuffer, 510, packet3, 4, 2);
                     }
                     else
                     {
@@ -152,11 +165,13 @@ namespace ArtnetNode
 
                 try
                 {
-                    // Write full DMX frame to Enttec Pro hardware
-                    port.Write(localBuffer, 0, localBuffer.Length);
+                    // Write the 3 blocks sequentially
+                    port.Write(packet1, 0, packet1.Length);
+                    port.Write(packet2, 0, packet2.Length);
+                    port.Write(packet3, 0, packet3.Length);
 
-                    // Sleep to allow 115200 baud transmission of 518 bytes (~45ms)
-                    // This protects the FTDI chip and Enttec Pro controller buffers from overflowing.
+                    // Sleep to allow transmission of 524 bytes at 38400 baud (~137ms)
+                    // We sleep 45ms to balance CPU cycles, and the serial port hardware queue handles buffer flow.
                     Thread.Sleep(45);
                 }
                 catch (Exception)
@@ -167,3 +182,4 @@ namespace ArtnetNode
         }
     }
 }
+

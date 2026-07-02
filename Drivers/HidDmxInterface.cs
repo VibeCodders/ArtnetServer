@@ -2,7 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Threading;
 
-namespace ArtnetNode
+namespace ArtnetNode.Drivers
 {
     public class HidDmxInterface : IDmxInterface
     {
@@ -165,3 +165,4 @@ namespace ArtnetNode
         }
     }
 }
+
