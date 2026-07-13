@@ -5,8 +5,8 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Collections.Generic;
-using System.Linq;
+using ArtnetNode.Core;
+using Microsoft.Extensions.Logging;
 
 namespace ArtnetNode.Core
 {
@@ -15,16 +15,50 @@ namespace ArtnetNode.Core
         private HttpListener? _listener;
         private CancellationTokenSource? _cts;
         private readonly ArtnetNodeEngine _engine;
+        private readonly ILogger _logger;
+        private readonly ArtnetOptions _options;
         private readonly DateTime _startTime;
         private bool _isRunning;
+        private string _htmlContent = "";
+        private int _eventId;
 
         public int Port { get; private set; } = 8080;
         public bool IsRunning => _isRunning;
 
-        public ArtnetHttpServer(ArtnetNodeEngine engine)
+        public ArtnetHttpServer(ArtnetNodeEngine engine, ILogger logger, ArtnetOptions options)
         {
             _engine = engine;
+            _logger = logger;
+            _options = options;
             _startTime = DateTime.Now;
+            LoadHtml();
+        }
+
+        private void LoadHtml()
+        {
+            try
+            {
+                string htmlPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dashboard.html");
+                if (File.Exists(htmlPath))
+                {
+                    _htmlContent = File.ReadAllText(htmlPath);
+                    _logger.LogInformation("Dashboard HTML caricata da file esterno");
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Impossibile caricare dashboard.html, uso fallback");
+            }
+
+            _htmlContent = @"<!DOCTYPE html>
+<html>
+<head><title>Art-Net Node</title></head>
+<body>
+<h1>Art-Net Node</h1>
+<p>Dashboard non disponibile. Assicurarsi che dashboard.html sia presente nella directory dell'applicazione.</p>
+</body>
+</html>";
         }
 
         public void Start(int preferredPort = 8080)
@@ -34,67 +68,63 @@ namespace ArtnetNode.Core
             Port = preferredPort;
             _cts = new CancellationTokenSource();
 
-            // Try to bind HttpListener
             int attempts = 0;
             while (attempts < 5)
             {
                 try
                 {
                     _listener = new HttpListener();
-                    // First try wildcards for general access
                     _listener.Prefixes.Add($"http://*:{Port}/");
                     _listener.Start();
                     _isRunning = true;
                     break;
                 }
-                catch (HttpListenerException ex) when (ex.ErrorCode == 5) // Access Denied
+                catch (HttpListenerException ex) when (ex.ErrorCode == 5)
                 {
-                    // Access Denied: Fallback to localhost and local IP bindings
                     _listener?.Close();
                     _listener = new HttpListener();
                     _listener.Prefixes.Add($"http://localhost:{Port}/");
                     _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
 
-                    // Try binding to engine's IP if configured
-                    if (IPAddress.TryParse(_engine.BindIpAddress, out var ip) && 
+                    if (IPAddress.TryParse(_engine.BindIpAddress, out var ip) &&
                         !ip.Equals(IPAddress.Any) && !ip.Equals(IPAddress.IPv6Any))
                     {
                         try
                         {
                             _listener.Prefixes.Add($"http://{_engine.BindIpAddress}:{Port}/");
                         }
-                        catch { /* Ignore single IP bind errors */ }
+                        catch { }
                     }
 
                     try
                     {
                         _listener.Start();
                         _isRunning = true;
-                        _engine.Log($"[WARNING] Server HTTP avviato su localhost:{Port} (Privilegi di rete limitati).");
+                        _logger.LogWarning("Server HTTP avviato su localhost:{Port} (Privilegi di rete limitati)", Port);
                         break;
                     }
                     catch (Exception innerEx)
                     {
-                        _engine.Log($"[ERRORE HTTP] Tentativo porta {Port} fallito: {innerEx.Message}");
+                        _logger.LogError(innerEx, "Tentativo porta {Port} fallito", Port);
                     }
                 }
                 catch (Exception ex)
                 {
-                    _engine.Log($"[ERRORE HTTP] Impossibile avviare sulla porta {Port}: {ex.Message}");
+                    _logger.LogError(ex, "Impossibile avviare sulla porta {Port}", Port);
                 }
 
-                Port++; // Try next port
+                Port++;
                 attempts++;
             }
 
             if (_isRunning && _listener != null)
             {
-                _engine.Log($"Web Dashboard attiva su http://localhost:{Port}/");
+                _logger.LogInformation("Web Dashboard attiva su http://localhost:{Port}/", Port);
                 Task.Run(() => ListenLoop(_cts.Token));
             }
             else
             {
-                _engine.Log("[ERRORE HTTP] Impossibile avviare il server HTTP.");
+                _logger.LogError("Impossibile avviare il server HTTP");
             }
         }
 
@@ -109,12 +139,12 @@ namespace ArtnetNode.Core
                 _listener?.Stop();
                 _listener?.Close();
             }
-            catch { /* Ignore listener cleanup exceptions */ }
+            catch { }
 
             _cts?.Dispose();
             _cts = null;
             _listener = null;
-            _engine.Log("Server HTTP arrestato.");
+            _logger.LogInformation("Server HTTP arrestato");
         }
 
         public void Dispose()
@@ -129,7 +159,6 @@ namespace ArtnetNode.Core
                 try
                 {
                     HttpListenerContext context = await _listener.GetContextAsync();
-                    // Process context in a separate task to avoid blocking the listen loop
                     _ = Task.Run(() => HandleRequestAsync(context), token);
                 }
                 catch (ObjectDisposedException)
@@ -140,7 +169,7 @@ namespace ArtnetNode.Core
                 {
                     if (!token.IsCancellationRequested)
                     {
-                        _engine.RaiseError($"Errore del server HTTP: {ex.Message}");
+                        _logger.LogError(ex, "Errore del server HTTP");
                     }
                 }
             }
@@ -151,15 +180,29 @@ namespace ArtnetNode.Core
             HttpListenerRequest request = context.Request;
             HttpListenerResponse response = context.Response;
 
-            // CORS headers
-            response.Headers.Add("Access-Control-Allow-Origin", "*");
+            string corsOrigin = GetCorsOrigin(request);
+            if (!string.IsNullOrEmpty(corsOrigin))
+            {
+                response.Headers.Add("Access-Control-Allow-Origin", corsOrigin);
+            }
             response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-            response.Headers.Add("Access-Control-Allow-Headers", "Content-Type");
+            response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
             if (request.HttpMethod == "OPTIONS")
             {
                 response.StatusCode = (int)HttpStatusCode.OK;
                 response.Close();
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(_options.ApiToken) && !IsAuthenticated(request))
+            {
+                response.StatusCode = (int)HttpStatusCode.Unauthorized;
+                byte[] buffer = Encoding.UTF8.GetBytes("{\"error\": \"Unauthorized\"}");
+                response.ContentType = "application/json";
+                response.ContentLength64 = buffer.Length;
+                await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+                response.OutputStream.Close();
                 return;
             }
 
@@ -182,6 +225,18 @@ namespace ArtnetNode.Core
                 if (request.HttpMethod == "GET" && urlPath == "/api/dmx")
                 {
                     await ServeDmxAsync(request, response);
+                    return;
+                }
+
+                if (request.HttpMethod == "GET" && urlPath == "/api/events")
+                {
+                    await ServeSseAsync(response, token);
+                    return;
+                }
+
+                if (request.HttpMethod == "GET" && urlPath == "/api/universes")
+                {
+                    await ServeUniversesAsync(response);
                     return;
                 }
 
@@ -209,12 +264,11 @@ namespace ArtnetNode.Core
                     return;
                 }
 
-                // 404 Not Found
                 response.StatusCode = (int)HttpStatusCode.NotFound;
-                byte[] buffer = Encoding.UTF8.GetBytes("404 - Not Found");
-                response.ContentType = "text/plain";
-                response.ContentLength64 = buffer.Length;
-                await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+                byte[] notFoundBuffer = Encoding.UTF8.GetBytes("{\"error\": \"Not Found\"}");
+                response.ContentType = "application/json";
+                response.ContentLength64 = notFoundBuffer.Length;
+                await response.OutputStream.WriteAsync(notFoundBuffer, 0, notFoundBuffer.Length);
                 response.OutputStream.Close();
             }
             catch (Exception ex)
@@ -222,19 +276,50 @@ namespace ArtnetNode.Core
                 try
                 {
                     response.StatusCode = (int)HttpStatusCode.InternalServerError;
-                    byte[] buffer = Encoding.UTF8.GetBytes($"500 - Internal Server Error: {ex.Message}");
-                    response.ContentType = "text/plain";
+                    byte[] buffer = Encoding.UTF8.GetBytes($"{{\"error\": \"{ex.Message}\"}}");
+                    response.ContentType = "application/json";
                     response.ContentLength64 = buffer.Length;
                     await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
                     response.OutputStream.Close();
                 }
-                catch { /* Ignore cascade output stream failures */ }
+                catch { }
             }
+        }
+
+        private bool IsAuthenticated(HttpListenerRequest request)
+        {
+            string? authHeader = request.Headers["Authorization"];
+            return ApiKeyAuthHandler.ValidateToken(authHeader, _options.ApiToken);
+        }
+
+        private string GetCorsOrigin(HttpListenerRequest request)
+        {
+            string origin = request.Headers["Origin"] ?? "";
+            if (string.IsNullOrEmpty(origin)) return "";
+
+            var origins = _options.CorsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var pattern in origins)
+            {
+                if (pattern == "*") return "*";
+                if (pattern.Contains("*"))
+                {
+                    string regexPattern = "^" + System.Text.RegularExpressions.Regex.Escape(pattern).Replace("\\*", ".*") + "$";
+                    if (System.Text.RegularExpressions.Regex.IsMatch(origin, regexPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                    {
+                        return origin;
+                    }
+                }
+                else if (origin.Equals(pattern, StringComparison.OrdinalIgnoreCase))
+                {
+                    return origin;
+                }
+            }
+            return "";
         }
 
         private async Task ServeHtmlAsync(HttpListenerResponse response)
         {
-            byte[] buffer = Encoding.UTF8.GetBytes(IndexHtml);
+            byte[] buffer = Encoding.UTF8.GetBytes(_htmlContent);
             response.StatusCode = (int)HttpStatusCode.OK;
             response.ContentType = "text/html; charset=utf-8";
             response.ContentLength64 = buffer.Length;
@@ -249,7 +334,9 @@ namespace ArtnetNode.Core
                 driverType = i.Config.DriverType,
                 comPort = i.Config.ComPort,
                 isConnected = i.Interface.IsConnected,
-                status = i.ConnectionStatus
+                status = i.ConnectionStatus,
+                isReconnecting = i.IsReconnecting,
+                reconnectAttempt = i.ReconnectAttempt
             }).ToList();
 
             var statusData = new {
@@ -264,14 +351,7 @@ namespace ArtnetNode.Core
                 httpPort = Port
             };
 
-            string jsonString = JsonSerializer.Serialize(statusData);
-            byte[] buffer = Encoding.UTF8.GetBytes(jsonString);
-
-            response.StatusCode = (int)HttpStatusCode.OK;
-            response.ContentType = "application/json";
-            response.ContentLength64 = buffer.Length;
-            await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-            response.OutputStream.Close();
+            await WriteJsonResponse(response, statusData);
         }
 
         private async Task ServeDmxAsync(HttpListenerRequest request, HttpListenerResponse response)
@@ -288,22 +368,125 @@ namespace ArtnetNode.Core
             }
 
             byte[] dmxData = _engine.GetCurrentMergedDmx(universe);
-            
-            // Output overrides list to show which are manual
+
             var responseData = new {
                 universe = universe,
                 dmx = dmxData,
                 overridden = _engine.ManualOverrideFlags
             };
 
-            string jsonString = JsonSerializer.Serialize(responseData);
-            byte[] buffer = Encoding.UTF8.GetBytes(jsonString);
+            await WriteJsonResponse(response, responseData);
+        }
 
+        private async Task ServeSseAsync(HttpListenerResponse response, CancellationToken requestToken)
+        {
             response.StatusCode = (int)HttpStatusCode.OK;
-            response.ContentType = "application/json";
-            response.ContentLength64 = buffer.Length;
+            response.ContentType = "text/event-stream";
+            response.Headers.Add("Cache-Control", "no-cache");
+            response.Headers.Add("Connection", "keep-alive");
+
+            _engine.StatusChanged += OnEngineStatusChanged;
+            _engine.DmxReceived += OnEngineDmxReceived;
+            _engine.ErrorOccurred += OnEngineError;
+            _engine.LogMessage += OnEngineLog;
+
+            try
+            {
+                await SendSseEvent(response, "connected", new { time = DateTime.Now });
+
+                while (!requestToken.IsCancellationRequested && _isRunning)
+                {
+                    await Task.Delay(1000, requestToken);
+                    try
+                    {
+                        await SendSseEvent(response, "heartbeat", new { time = DateTime.Now });
+                    }
+                    catch
+                    {
+                        break;
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Errore SSE");
+            }
+            finally
+            {
+                _engine.StatusChanged -= OnEngineStatusChanged;
+                _engine.DmxReceived -= OnEngineDmxReceived;
+                _engine.ErrorOccurred -= OnEngineError;
+                _engine.LogMessage -= OnEngineLog;
+                try { response.OutputStream.Close(); } catch { }
+            }
+        }
+
+        private async void OnEngineStatusChanged(object? sender, EventArgs e)
+        {
+            if (!_isRunning) return;
+            try
+            {
+                await SendSseEventLocal("status", new { time = DateTime.Now });
+            }
+            catch { }
+        }
+
+        private async void OnEngineDmxReceived(object? sender, DmxEventArgs e)
+        {
+            if (!_isRunning) return;
+            try
+            {
+                await SendSseEventLocal("dmx", new { universe = e.Universe, senderIp = e.SenderIp });
+            }
+            catch { }
+        }
+
+        private async void OnEngineError(object? sender, string error)
+        {
+            if (!_isRunning) return;
+            try
+            {
+                await SendSseEventLocal("error", new { message = error, time = DateTime.Now });
+            }
+            catch { }
+        }
+
+        private async void OnEngineLog(object? sender, string message)
+        {
+            if (!_isRunning) return;
+            try
+            {
+                await SendSseEventLocal("log", new { message, time = DateTime.Now });
+            }
+            catch { }
+        }
+
+        private async Task SendSseEvent(HttpListenerResponse response, string eventName, object data)
+        {
+            string json = JsonSerializer.Serialize(data);
+            string sse = $"event: {eventName}\ndata: {json}\n\n";
+            byte[] buffer = Encoding.UTF8.GetBytes(sse);
             await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-            response.OutputStream.Close();
+            await response.OutputStream.FlushAsync();
+        }
+
+        private async Task SendSseEventLocal(string eventName, object data)
+        {
+        }
+
+        private async Task ServeUniversesAsync(HttpListenerResponse response)
+        {
+            var universes = _engine.ActiveInterfaces
+                .Select(i => new {
+                    universe = i.Config.Universe,
+                    driverType = i.Config.DriverType,
+                    isConnected = i.Interface.IsConnected,
+                    status = i.ConnectionStatus
+                })
+                .ToList();
+
+            await WriteJsonResponse(response, new { universes });
         }
 
         private async Task HandleBlackoutAsync(HttpListenerRequest request, HttpListenerResponse response)
@@ -318,13 +501,7 @@ namespace ArtnetNode.Core
                 }
             }
 
-            string jsonString = JsonSerializer.Serialize(new { success = true });
-            byte[] buffer = Encoding.UTF8.GetBytes(jsonString);
-            response.StatusCode = (int)HttpStatusCode.OK;
-            response.ContentType = "application/json";
-            response.ContentLength64 = buffer.Length;
-            await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-            response.OutputStream.Close();
+            await WriteJsonResponse(response, new { success = true });
         }
 
         private async Task HandleOverrideSetAsync(HttpListenerRequest request, HttpListenerResponse response)
@@ -336,7 +513,7 @@ namespace ArtnetNode.Core
                 {
                     int channel = doc.RootElement.GetProperty("channel").GetInt32();
                     byte value = (byte)doc.RootElement.GetProperty("value").GetInt16();
-                    
+
                     int universe = 0;
                     if (doc.RootElement.TryGetProperty("universe", out var uniProp))
                     {
@@ -351,13 +528,7 @@ namespace ArtnetNode.Core
                 }
             }
 
-            string jsonString = JsonSerializer.Serialize(new { success = true });
-            byte[] buffer = Encoding.UTF8.GetBytes(jsonString);
-            response.StatusCode = (int)HttpStatusCode.OK;
-            response.ContentType = "application/json";
-            response.ContentLength64 = buffer.Length;
-            await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-            response.OutputStream.Close();
+            await WriteJsonResponse(response, new { success = true });
         }
 
         private async Task HandleOverrideClearChannelAsync(HttpListenerRequest request, HttpListenerResponse response)
@@ -382,972 +553,25 @@ namespace ArtnetNode.Core
                 }
             }
 
-            string jsonString = JsonSerializer.Serialize(new { success = true });
-            byte[] buffer = Encoding.UTF8.GetBytes(jsonString);
-            response.StatusCode = (int)HttpStatusCode.OK;
-            response.ContentType = "application/json";
-            response.ContentLength64 = buffer.Length;
-            await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-            response.OutputStream.Close();
+            await WriteJsonResponse(response, new { success = true });
         }
 
         private async Task HandleOverrideClearAllAsync(HttpListenerResponse response)
         {
             _engine.ClearManualOverrides();
+            await WriteJsonResponse(response, new { success = true });
+        }
 
-            string jsonString = JsonSerializer.Serialize(new { success = true });
+        private async Task WriteJsonResponse(HttpListenerResponse response, object data)
+        {
+            string jsonString = JsonSerializer.Serialize(data);
             byte[] buffer = Encoding.UTF8.GetBytes(jsonString);
+
             response.StatusCode = (int)HttpStatusCode.OK;
             response.ContentType = "application/json";
             response.ContentLength64 = buffer.Length;
             await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
             response.OutputStream.Close();
         }
-
-        #region Embedded HTML Dashboard
-        private static readonly string IndexHtml = @"<!DOCTYPE html>
-<html lang=""it"">
-<head>
-    <meta charset=""UTF-8"">
-    <meta name=""viewport"" content=""width=device-width, initial-scale=1.0"">
-    <title>Art-Net Node Web Dashboard</title>
-    <link rel=""preconnect"" href=""https://fonts.googleapis.com"">
-    <link rel=""preconnect"" href=""https://fonts.gstatic.com"" crossorigin>
-    <link href=""https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap"" rel=""stylesheet"">
-    <style>
-        :root {
-            --bg-dark: #07070a;
-            --panel-bg: rgba(20, 20, 27, 0.6);
-            --panel-border: rgba(255, 255, 255, 0.08);
-            --accent-cyan: #00f0ff;
-            --accent-green: #00e676;
-            --accent-red: #ff1744;
-            --accent-orange: #ff9100;
-            --text-light: #f0f0f7;
-            --text-muted: #8e8e9f;
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            font-family: 'Outfit', sans-serif;
-            -webkit-tap-highlight-color: transparent;
-        }
-
-        body {
-            background-color: var(--bg-dark);
-            color: var(--text-light);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            overflow-x: hidden;
-            background-image: 
-                radial-gradient(circle at 10% 20%, rgba(0, 240, 255, 0.04) 0%, transparent 40%),
-                radial-gradient(circle at 90% 80%, rgba(138, 43, 226, 0.04) 0%, transparent 40%);
-        }
-
-        header {
-            padding: 20px;
-            background: rgba(10, 10, 15, 0.8);
-            backdrop-filter: blur(10px);
-            border-bottom: 1px solid var(--panel-border);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            position: sticky;
-            top: 0;
-            z-index: 100;
-        }
-
-        .logo-area {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .pulse-led {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background-color: var(--accent-green);
-            box-shadow: 0 0 10px var(--accent-green);
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 230, 118, 0.7); }
-            70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(0, 230, 118, 0); }
-            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 230, 118, 0); }
-        }
-
-        .pulse-led.stopped {
-            background-color: var(--text-muted);
-            box-shadow: none;
-            animation: none;
-        }
-
-        .logo-title {
-            font-size: 20px;
-            font-weight: 800;
-            background: linear-gradient(90deg, #00f0ff, #8a2be2);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            letter-spacing: 0.5px;
-        }
-
-        .logo-subtitle {
-            font-size: 10px;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-top: -2px;
-        }
-
-        .header-actions {
-            display: flex;
-            gap: 12px;
-        }
-
-        .btn {
-            padding: 10px 16px;
-            border-radius: 8px;
-            border: 1px solid transparent;
-            font-weight: 600;
-            font-size: 14px;
-            cursor: pointer;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            color: #fff;
-        }
-
-        .btn-blackout {
-            background: rgba(255, 23, 68, 0.15);
-            border-color: rgba(255, 23, 68, 0.4);
-            color: var(--accent-red);
-        }
-
-        .btn-blackout.active {
-            background: var(--accent-red);
-            color: #fff;
-            box-shadow: 0 0 15px rgba(255, 23, 68, 0.5);
-        }
-
-        .btn-release {
-            background: rgba(255, 145, 0, 0.15);
-            border-color: rgba(255, 145, 0, 0.4);
-            color: var(--accent-orange);
-        }
-
-        .main-container {
-            padding: 20px;
-            flex-grow: 1;
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 20px;
-            max-width: 1400px;
-            margin: 0 auto;
-            width: 100%;
-        }
-
-        @media (min-width: 1024px) {
-            .main-container {
-                grid-template-columns: 320px 1fr;
-            }
-        }
-
-        .panel {
-            background: var(--panel-bg);
-            border: 1px solid var(--panel-border);
-            backdrop-filter: blur(12px);
-            border-radius: 16px;
-            padding: 20px;
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.25);
-            display: flex;
-            flex-direction: column;
-        }
-
-        .panel-title {
-            font-size: 16px;
-            font-weight: 600;
-            margin-bottom: 16px;
-            color: var(--text-light);
-            border-left: 3px solid var(--accent-cyan);
-            padding-left: 8px;
-        }
-
-        .stat-grid {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 12px;
-            margin-bottom: 20px;
-        }
-
-        .stat-card {
-            background: rgba(255, 255, 255, 0.02);
-            border: 1px solid rgba(255, 255, 255, 0.04);
-            border-radius: 10px;
-            padding: 12px;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .stat-label {
-            font-size: 11px;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .stat-value {
-            font-size: 18px;
-            font-weight: 600;
-            color: var(--accent-cyan);
-            margin-top: 4px;
-        }
-
-        .device-item {
-            background: rgba(255, 255, 255, 0.02);
-            border: 1px solid rgba(255, 255, 255, 0.04);
-            border-radius: 10px;
-            padding: 12px;
-            margin-bottom: 8px;
-            font-size: 13px;
-        }
-
-        .device-header {
-            display: flex;
-            justify-content: space-between;
-            font-weight: 600;
-            margin-bottom: 4px;
-        }
-
-        .device-meta {
-            color: var(--text-muted);
-            font-size: 11px;
-        }
-
-        .device-status {
-            color: var(--accent-green);
-            font-weight: 600;
-        }
-
-        .device-status.disconnected {
-            color: var(--accent-red);
-        }
-
-        .visualizer-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 16px;
-        }
-
-        .visualizer-title-group {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .universe-selector {
-            background: #13131c;
-            color: var(--text-light);
-            border: 1px solid var(--panel-border);
-            padding: 6px 12px;
-            border-radius: 8px;
-            font-size: 13px;
-            outline: none;
-            cursor: pointer;
-        }
-
-        .universe-selector:focus {
-            border-color: var(--accent-cyan);
-        }
-
-        .dmx-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
-            gap: 4px;
-            overflow-y: auto;
-            max-height: 600px;
-            padding-right: 4px;
-        }
-
-        .dmx-cell {
-            background: #0f0f16;
-            border: 1px solid rgba(255, 255, 255, 0.03);
-            border-radius: 6px;
-            padding: 6px 2px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            cursor: pointer;
-            transition: all 0.15s ease;
-        }
-
-        .dmx-cell:hover {
-            border-color: rgba(0, 240, 255, 0.3);
-            transform: scale(1.05);
-        }
-
-        .dmx-cell.selected {
-            border-color: var(--accent-cyan);
-            box-shadow: 0 0 10px rgba(0, 240, 255, 0.2);
-        }
-
-        .dmx-cell.overridden {
-            border-color: var(--accent-orange) !important;
-        }
-
-        .dmx-num {
-            font-size: 8px;
-            color: var(--text-muted);
-            margin-bottom: 2px;
-        }
-
-        .dmx-val {
-            font-size: 11px;
-            font-weight: 600;
-            color: #555563;
-        }
-
-        .dmx-cell.active .dmx-val {
-            color: #fff;
-        }
-
-        /* Override Panel Styles */
-        .control-panel {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-
-        .selected-channel-info {
-            background: rgba(255, 255, 255, 0.02);
-            border: 1px solid rgba(255, 255, 255, 0.04);
-            border-radius: 12px;
-            padding: 16px;
-            text-align: center;
-        }
-
-        .selected-label {
-            font-size: 12px;
-            color: var(--text-muted);
-            text-transform: uppercase;
-        }
-
-        .selected-value {
-            font-size: 32px;
-            font-weight: 800;
-            color: var(--accent-cyan);
-            margin: 6px 0;
-        }
-
-        .selected-status {
-            font-size: 11px;
-            color: var(--accent-orange);
-            font-weight: 600;
-            display: none;
-        }
-
-        .selected-status.active {
-            display: block;
-        }
-
-        .fader-container {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 10px 0;
-        }
-
-        .modern-slider {
-            -webkit-appearance: none;
-            width: 100%;
-            height: 12px;
-            border-radius: 6px;
-            background: #13131c;
-            outline: none;
-            border: 1px solid var(--panel-border);
-        }
-
-        .modern-slider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            background: var(--accent-cyan);
-            cursor: pointer;
-            box-shadow: 0 0 10px var(--accent-cyan);
-            transition: transform 0.1s ease;
-        }
-
-        .modern-slider::-webkit-slider-thumb:hover {
-            transform: scale(1.1);
-        }
-
-        .quick-values {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 8px;
-        }
-
-        .btn-quick {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            padding: 8px;
-            font-size: 13px;
-        }
-
-        .btn-quick:hover {
-            background: rgba(255, 255, 255, 0.08);
-            border-color: rgba(255, 255, 255, 0.1);
-        }
-
-        .control-actions {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            margin-top: 10px;
-        }
-
-        .btn-action {
-            width: 100%;
-            justify-content: center;
-        }
-
-        .btn-primary {
-            background: var(--accent-cyan);
-            color: #07070a;
-        }
-
-        .btn-primary:hover {
-            box-shadow: 0 0 15px rgba(0, 240, 255, 0.4);
-        }
-
-        .btn-outline {
-            background: transparent;
-            border-color: var(--panel-border);
-            color: var(--text-light);
-        }
-
-        .btn-outline:hover {
-            background: rgba(255, 255, 255, 0.03);
-            border-color: var(--text-muted);
-        }
-
-        footer {
-            padding: 20px;
-            text-align: center;
-            color: var(--text-muted);
-            font-size: 12px;
-            border-top: 1px solid var(--panel-border);
-            margin-top: auto;
-            background: rgba(5, 5, 8, 0.5);
-        }
-
-        /* Scrollbar aesthetics */
-        ::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: transparent;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: rgba(255, 255, 255, 0.08);
-            border-radius: 3px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: rgba(255, 255, 255, 0.15);
-        }
-    </style>
-</head>
-<body>
-    <header>
-        <div class=""logo-area"">
-            <div id=""statusLed"" class=""pulse-led""></div>
-            <div>
-                <h1 class=""logo-title"">ART-NET NODE</h1>
-                <div class=""logo-subtitle"">Gateway Dashboard</div>
-            </div>
-        </div>
-        <div class=""header-actions"">
-            <button id=""btnReleaseAll"" class=""btn btn-release"" onclick=""releaseAllOverrides()"" style=""display: none;"">
-                <svg width=""14"" height=""14"" viewBox=""0 0 24 24"" fill=""none"" stroke=""currentColor"" stroke-width=""2.5""><path d=""M18 6L6 18M6 6l12 12""/></svg>
-                RILASCIA OVERRIDE
-            </button>
-            <button id=""btnBlackout"" class=""btn btn-blackout"" onclick=""toggleBlackout()"">
-                <svg width=""14"" height=""14"" viewBox=""0 0 24 24"" fill=""none"" stroke=""currentColor"" stroke-width=""2.5""><circle cx=""12"" cy=""12"" r=""10""/><path d=""M12 8v4M12 16h.01""/></svg>
-                BLACKOUT
-            </button>
-        </div>
-    </header>
-
-    <div class=""main-container"">
-        <!-- SIDEBAR: Status & Manual Control -->
-        <div class=""sidebar-container"" style=""display: flex; flex-direction: column; gap: 20px;"">
-            <!-- PANEL: Diagnostics -->
-            <div class=""panel"">
-                <h2 class=""panel-title"">Diagnostica & Rete</h2>
-                <div class=""stat-grid"">
-                    <div class=""stat-card"">
-                        <span class=""stat-label"">Stato Node</span>
-                        <span id=""valStatus"" class=""stat-value"" style=""color: var(--accent-green);"">IN FUNZIONE</span>
-                    </div>
-                    <div class=""stat-grid"" style=""grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 0;"">
-                        <div class=""stat-card"">
-                            <span class=""stat-label"">FPS</span>
-                            <span id=""valFps"" class=""stat-value"">0</span>
-                        </div>
-                        <span class=""stat-card"">
-                            <span class=""stat-label"">Uptime</span>
-                            <span id=""valUptime"" class=""stat-value"" style=""font-size: 14px; margin-top: 8px;"">0s</span>
-                        </span>
-                    </div>
-                    <div class=""stat-card"">
-                        <span class=""stat-label"">Pacchetti Ricevuti</span>
-                        <span id=""valPackets"" class=""stat-value"" style=""font-size: 16px;"">0</span>
-                    </div>
-                    <div class=""stat-card"">
-                        <span class=""stat-label"">Ultimo Trasmettitore</span>
-                        <span id=""valConsoleIp"" class=""stat-value"" style=""font-size: 14px; color: var(--text-light); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;"">N/A</span>
-                    </div>
-                </div>
-
-                <h3 class=""panel-title"" style=""margin-top: 8px; font-size: 14px;"">Interfacce Fisiche</h3>
-                <div id=""deviceList"" style=""display: flex; flex-direction: column; max-height: 150px; overflow-y: auto;"">
-                    <!-- Configured interfaces render here -->
-                </div>
-            </div>
-
-            <!-- PANEL: Manual Override Fader -->
-            <div class=""panel"" id=""panelOverride"">
-                <h2 class=""panel-title"">Controllo Manuale Canale</h2>
-                <div class=""control-panel"">
-                    <div class=""selected-channel-info"">
-                        <div class=""selected-label"">Canale DMX</div>
-                        <div class=""selected-value"" id=""overrideChLabel"">SELEZIONA</div>
-                        <div class=""selected-status"" id=""overrideActiveBadge"">OVERRIDE ATTIVO</div>
-                    </div>
-
-                    <div class=""fader-container"">
-                        <input type=""range"" id=""overrideSlider"" min=""0"" max=""255"" value=""0"" class=""modern-slider"" oninput=""updateOverrideValueFromSlider(this.value)"" onchange=""sendOverrideToServer()"" disabled>
-                    </div>
-
-                    <div class=""quick-values"">
-                        <button class=""btn btn-quick"" onclick=""setQuickValue(0)"" disabled>OFF</button>
-                        <button class=""btn btn-quick"" onclick=""setQuickValue(127)"" disabled>50%</button>
-                        <button class=""btn btn-quick"" onclick=""setQuickValue(255)"" disabled>FULL</button>
-                    </div>
-
-                    <div class=""control-actions"">
-                        <button id=""btnReleaseChannel"" class=""btn btn-outline btn-action"" onclick=""releaseChannel()"" disabled>RILASCIA CANALE</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- MAIN CONTENT: DMX Grid -->
-        <div class=""panel"" style=""flex-grow: 1;"">
-            <div class=""visualizer-header"">
-                <div class=""visualizer-title-group"">
-                    <h2 class=""panel-title"" style=""margin-bottom: 0;"">Monitor Canali DMX</h2>
-                </div>
-                <div>
-                    <label for=""universeSelect"" style=""font-size: 12px; color: var(--text-muted); margin-right: 8px;"">Universo:</label>
-                    <select id=""universeSelect"" class=""universe-selector"" onchange=""changeUniverse(this.value)"">
-                        <!-- Universes render here -->
-                    </select>
-                </div>
-            </div>
-            
-            <div id=""dmxGrid"" class=""dmx-grid"">
-                <!-- 512 cells render here -->
-            </div>
-        </div>
-    </div>
-
-    <footer>
-        Art-Net Node Gateway &copy; 2026 VibeCodders. Tutti i diritti riservati.
-    </footer>
-
-    <script>
-        let selectedChannel = -1;
-        let activeUniverse = 0;
-        let blackoutActive = false;
-        let manualOverrideActive = false;
-        let isFirstLoad = true;
-        let channelFlags = new Array(512).fill(false);
-        let channelValues = new Array(512).fill(0);
-        let previousValues = new Array(512).fill(-1);
-
-        // Pre-cached HSL colors to optimize rendering
-        const bgBrushes = new Array(256);
-        const textBrushes = new Array(256);
-        
-        function precalculateColors() {
-            bgBrushes[0] = '#0f0f16';
-            textBrushes[0] = '#555563';
-            
-            for (let i = 1; i < 256; i++) {
-                const factor = (i - 1) / 254.0;
-                // Hue from blue (240 deg) to red (0 deg)
-                const hue = 240 * (1.0 - factor);
-                const lightness = 12 + 28 * factor;
-                bgBrushes[i] = `hsl(${hue}, 85%, ${lightness}%)`;
-                textBrushes[i] = '#ffffff';
-            }
-        }
-        precalculateColors();
-
-        // Create Grid Cells
-        const dmxGrid = document.getElementById('dmxGrid');
-        for (let i = 1; i <= 512; i++) {
-            const cell = document.createElement('div');
-            cell.id = `cell-${i}`;
-            cell.className = 'dmx-cell';
-            cell.onclick = () => selectChannel(i);
-            
-            const num = document.createElement('span');
-            num.className = 'dmx-num';
-            num.textContent = String(i).padStart(3, '0');
-            
-            const val = document.createElement('span');
-            val.className = 'dmx-val';
-            val.textContent = '0';
-            
-            cell.appendChild(num);
-            cell.appendChild(val);
-            dmxGrid.appendChild(cell);
-        }
-
-        function formatUptime(seconds) {
-            const h = Math.floor(seconds / 3600);
-            const m = Math.floor((seconds % 3600) / 60);
-            const s = seconds % 60;
-            return `${h}h ${m}m ${s}s`;
-        }
-
-        async function fetchStatus() {
-            try {
-                const res = await fetch('/api/status');
-                if (!res.ok) return;
-                const data = await res.json();
-                
-                // Update header LED
-                const led = document.getElementById('statusLed');
-                const valStatus = document.getElementById('valStatus');
-                if (data.isRunning) {
-                    led.className = 'pulse-led';
-                    valStatus.textContent = 'IN FUNZIONE';
-                    valStatus.style.color = 'var(--accent-green)';
-                } else {
-                    led.className = 'pulse-led stopped';
-                    valStatus.textContent = 'ARRESTATO';
-                    valStatus.style.color = 'var(--text-muted)';
-                }
-                
-                document.getElementById('valPackets').textContent = data.totalPackets.toLocaleString();
-                document.getElementById('valConsoleIp').textContent = data.lastSenderIp;
-                document.getElementById('valUptime').textContent = formatUptime(data.uptimeSeconds);
-                
-                // Blackout status
-                blackoutActive = data.blackoutActive;
-                const btnBlackout = document.getElementById('btnBlackout');
-                if (blackoutActive) {
-                    btnBlackout.classList.add('active');
-                } else {
-                    btnBlackout.classList.remove('active');
-                }
-
-                // Global override status
-                manualOverrideActive = data.manualOverrideActive;
-                const btnReleaseAll = document.getElementById('btnReleaseAll');
-                if (manualOverrideActive) {
-                    btnReleaseAll.style.display = 'flex';
-                } else {
-                    btnReleaseAll.style.display = 'none';
-                }
-
-                // Populate universe selector
-                const select = document.getElementById('universeSelect');
-                if (isFirstLoad && data.interfaces.length > 0) {
-                    select.innerHTML = '';
-                    const universes = [...new Set(data.interfaces.map(i => i.universe))].sort((a,b) => a-b);
-                    universes.forEach(uni => {
-                        const opt = document.createElement('option');
-                        opt.value = uni;
-                        opt.textContent = `Universo ${uni}`;
-                        select.appendChild(opt);
-                    });
-                    if (universes.length > 0) {
-                        activeUniverse = universes[0];
-                    }
-                    isFirstLoad = false;
-                }
-
-                // Populate interfaces list
-                const deviceList = document.getElementById('deviceList');
-                deviceList.innerHTML = '';
-                data.interfaces.forEach(i => {
-                    const dev = document.createElement('div');
-                    dev.className = 'device-item';
-                    
-                    const isConnectedClass = i.isConnected ? 'device-status' : 'device-status disconnected';
-                    const statusText = i.isConnected ? i.status : 'Sconnesso';
-                    
-                    dev.innerHTML = `
-                        <div class=""device-header"">
-                            <span>Universo ${i.universe}</span>
-                            <span class=""${isConnectedClass}"">${statusText}</span>
-                        </div>
-                        <div class=""device-meta"">${i.driverType.toUpperCase()} ${i.comPort ? '| ' + i.comPort : ''}</div>
-                    `;
-                    deviceList.appendChild(dev);
-                });
-
-            } catch (err) {
-                console.error('Errore nel recupero dello stato:', err);
-            }
-        }
-
-        let fpsCount = 0;
-        let lastFpsCalcTime = Date.now();
-
-        async function fetchDmx() {
-            try {
-                const res = await fetch(`/api/dmx?universe=${activeUniverse}`);
-                if (!res.ok) return;
-                const data = await res.json();
-                
-                channelValues = data.dmx;
-                channelFlags = data.overridden;
-
-                fpsCount++;
-                const now = Date.now();
-                if (now - lastFpsCalcTime >= 1000) {
-                    document.getElementById('valFps').textContent = String(Math.round((fpsCount * 1000) / (now - lastFpsCalcTime)));
-                    fpsCount = 0;
-                    lastFpsCalcTime = now;
-                }
-
-                // Render DMX grid optimization: only touch DOM if values changed
-                for (let i = 0; i < 512; i++) {
-                    const chIndex = i + 1;
-                    const val = channelValues[i];
-                    const isOverridden = channelFlags[i];
-                    const prevVal = previousValues[i];
-
-                    // Check if anything changed
-                    const cell = document.getElementById(`cell-${chIndex}`);
-                    if (val !== prevVal) {
-                        const valLabel = cell.querySelector('.dmx-val');
-                        valLabel.textContent = val;
-                        
-                        // Update background and text styling using precalculated HSL values
-                        cell.style.background = bgBrushes[val];
-                        
-                        if (val > 0) {
-                            cell.classList.add('active');
-                            cell.style.borderColor = bgBrushes[val];
-                        } else {
-                            cell.classList.remove('active');
-                            cell.style.borderColor = 'rgba(255, 255, 255, 0.03)';
-                        }
-                        
-                        previousValues[i] = val;
-                    }
-
-                    // Handle override highlights
-                    if (isOverridden) {
-                        cell.classList.add('overridden');
-                    } else {
-                        cell.classList.remove('overridden');
-                    }
-                }
-
-                // If a channel is selected, keep its labels updated in real-time if network is changing them
-                if (selectedChannel !== -1) {
-                    const currentVal = channelValues[selectedChannel - 1];
-                    const isChOverridden = channelFlags[selectedChannel - 1];
-                    
-                    // Only update slider if not currently dragging (to avoid fighting the user)
-                    const slider = document.getElementById('overrideSlider');
-                    if (document.activeElement !== slider) {
-                        slider.value = currentVal;
-                        document.getElementById('overrideChLabel').textContent = `CH ${selectedChannel} = ${currentVal}`;
-                    }
-
-                    const badge = document.getElementById('overrideActiveBadge');
-                    if (isChOverridden) {
-                        badge.style.display = 'block';
-                        document.getElementById('btnReleaseChannel').disabled = false;
-                    } else {
-                        badge.style.display = 'none';
-                        document.getElementById('btnReleaseChannel').disabled = true;
-                    }
-                }
-
-            } catch (err) {
-                console.error('Errore nel recupero DMX:', err);
-            }
-        }
-
-        function selectChannel(chNum) {
-            // Deselect old cell
-            if (selectedChannel !== -1) {
-                document.getElementById(`cell-${selectedChannel}`).classList.remove('selected');
-            }
-
-            selectedChannel = chNum;
-            
-            // Highlight new cell
-            const cell = document.getElementById(`cell-${chNum}`);
-            cell.classList.add('selected');
-
-            // Activate override controls
-            document.getElementById('overrideSlider').disabled = false;
-            document.getElementById('btnReleaseChannel').disabled = !channelFlags[chNum - 1];
-            document.querySelectorAll('.btn-quick').forEach(b => b.disabled = false);
-
-            // Set current value
-            const currentVal = channelValues[chNum - 1];
-            document.getElementById('overrideSlider').value = currentVal;
-            document.getElementById('overrideChLabel').textContent = `CH ${chNum} = ${currentVal}`;
-            
-            const badge = document.getElementById('overrideActiveBadge');
-            if (channelFlags[chNum - 1]) {
-                badge.style.display = 'block';
-            } else {
-                badge.style.display = 'none';
-            }
-        }
-
-        function updateOverrideValueFromSlider(val) {
-            if (selectedChannel === -1) return;
-            document.getElementById('overrideChLabel').textContent = `CH ${selectedChannel} = ${val}`;
-        }
-
-        async function sendOverrideToServer() {
-            if (selectedChannel === -1) return;
-            const slider = document.getElementById('overrideSlider');
-            const val = parseInt(slider.value);
-            
-            try {
-                await fetch('/api/override/set', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        universe: activeUniverse,
-                        channel: selectedChannel,
-                        value: val
-                    })
-                });
-                
-                // Anticipate UI updates to feel lightning fast
-                channelValues[selectedChannel - 1] = val;
-                channelFlags[selectedChannel - 1] = true;
-                document.getElementById('overrideActiveBadge').style.display = 'block';
-                document.getElementById('btnReleaseChannel').disabled = false;
-                
-            } catch (err) {
-                console.error('Errore invio override:', err);
-            }
-        }
-
-        async function setQuickValue(val) {
-            if (selectedChannel === -1) return;
-            document.getElementById('overrideSlider').value = val;
-            document.getElementById('overrideChLabel').textContent = `CH ${selectedChannel} = ${val}`;
-            await sendOverrideToServer();
-        }
-
-        async function releaseChannel() {
-            if (selectedChannel === -1) return;
-            
-            try {
-                await fetch('/api/override/clear-channel', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        universe: activeUniverse,
-                        channel: selectedChannel
-                    })
-                });
-                
-                channelFlags[selectedChannel - 1] = false;
-                document.getElementById('overrideActiveBadge').style.display = 'none';
-                document.getElementById('btnReleaseChannel').disabled = true;
-                
-            } catch (err) {
-                console.error('Errore rilascio canale:', err);
-            }
-        }
-
-        async function releaseAllOverrides() {
-            try {
-                await fetch('/api/override/clear', { method: 'POST' });
-                if (selectedChannel !== -1) {
-                    document.getElementById('overrideActiveBadge').style.display = 'none';
-                    document.getElementById('btnReleaseChannel').disabled = true;
-                }
-            } catch (err) {
-                console.error('Errore rilascio totale:', err);
-            }
-        }
-
-        async function toggleBlackout() {
-            const nextState = !blackoutActive;
-            try {
-                await fetch('/api/blackout', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ active: nextState })
-                });
-                blackoutActive = nextState;
-                const btn = document.getElementById('btnBlackout');
-                if (blackoutActive) {
-                    btn.classList.add('active');
-                } else {
-                    btn.classList.remove('active');
-                }
-            } catch (err) {
-                console.error('Errore blackout:', err);
-            }
-        }
-
-        function changeUniverse(uni) {
-            activeUniverse = parseInt(uni);
-            // Clear previous cache to force re-render
-            previousValues.fill(-1);
-            if (selectedChannel !== -1) {
-                document.getElementById(`cell-${selectedChannel}`).classList.remove('selected');
-                selectedChannel = -1;
-                document.getElementById('overrideChLabel').textContent = 'SELEZIONA';
-                document.getElementById('overrideSlider').value = 0;
-                document.getElementById('overrideSlider').disabled = true;
-                document.getElementById('btnReleaseChannel').disabled = true;
-                document.querySelectorAll('.btn-quick').forEach(b => b.disabled = true);
-                document.getElementById('overrideActiveBadge').style.display = 'none';
-            }
-        }
-
-        // Poll Loop
-        fetchStatus();
-        setInterval(fetchStatus, 2000); // Poll status every 2 seconds
-        
-        // Fast DMX values poll loop (every 100ms)
-        setInterval(fetchDmx, 100);
-    </script>
-</body>
-</html>";
-        #endregion
     }
 }

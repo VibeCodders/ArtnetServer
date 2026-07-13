@@ -9,16 +9,17 @@ using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using ArtnetNode.Core;
+using ArtnetNode.Core.Logging;
 using ArtnetNode.Drivers;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Artnet.Views
 {
     public partial class MainWindow : Window
     {
-        // Core Components
         private ArtnetNodeEngine? _engine;
+        private readonly IServiceProvider? _serviceProvider;
 
-        // UI Performance & State
         private Border[] _channelBorders = new Border[512];
         private TextBlock[] _channelValueTexts = new TextBlock[512];
         public List<DmxInterfaceConfig> InitialDevices { get; } = new List<DmxInterfaceConfig>();
@@ -27,24 +28,26 @@ namespace Artnet.Views
         private int _monitoredUniverse = 0;
         private readonly object _dmxLock = new object();
         private bool _hasNewDmxData = false;
-        
-        // Throttled UI Timer & FPS Timer
+
         private DispatcherTimer _uiUpdateTimer = new DispatcherTimer();
         private DispatcherTimer _statsTimer = new DispatcherTimer();
-        
-        // Statistics counters
+
         private long _fpsPacketCount = 0;
         private long _totalPackets = 0;
         private string _lastSenderIp = "N/A";
 
-        // Performance Optimized Brushes (Pre-cached)
         private SolidColorBrush[] _bgBrushes = new SolidColorBrush[256];
         private SolidColorBrush[] _borderBrushes = new SolidColorBrush[256];
         private SolidColorBrush _zeroTextBrush = new SolidColorBrush(Color.FromRgb(90, 90, 105));
         private SolidColorBrush _activeTextBrush = new SolidColorBrush(Color.FromRgb(240, 240, 245));
 
-        public MainWindow()
+        public MainWindow() : this(null)
         {
+        }
+
+        public MainWindow(IServiceProvider? serviceProvider)
+        {
+            _serviceProvider = serviceProvider;
             InitializeComponent();
             InitializeBrushes();
             Loaded += MainWindow_Loaded;
@@ -53,32 +56,25 @@ namespace Artnet.Views
 
         private void InitializeBrushes()
         {
-            // Cache zero value brushes
             _zeroTextBrush.Freeze();
             _activeTextBrush.Freeze();
 
-            _bgBrushes[0] = new SolidColorBrush(Color.FromRgb(22, 22, 28)); // Deep dark grey/black
+            _bgBrushes[0] = new SolidColorBrush(Color.FromRgb(22, 22, 28));
             _bgBrushes[0].Freeze();
 
-            _borderBrushes[0] = new SolidColorBrush(Color.FromRgb(42, 42, 53)); // Soft border
+            _borderBrushes[0] = new SolidColorBrush(Color.FromRgb(42, 42, 53));
             _borderBrushes[0].Freeze();
 
-            // Pre-calculate HSL color gradients for 1-255 DMX values
             for (int i = 1; i < 256; i++)
             {
-                float factor = (i - 1) / 254.0f; // 0.0 to 1.0
-
-                // Hue goes from 240 degrees (0.6666 - Blue) down to 0 degrees (0.0 - Red)
+                float factor = (i - 1) / 254.0f;
                 double hue = 0.6666 * (1.0 - factor);
                 double saturation = 0.85;
-
-                // Background: from deep dark blue/green/red to a glowing bright tone
                 double bgLightness = 0.12 + 0.28 * factor;
                 Color bgColor = ColorFromHsl(hue, saturation, bgLightness);
                 _bgBrushes[i] = new SolidColorBrush(bgColor);
                 _bgBrushes[i].Freeze();
 
-                // Border: same hue, but much brighter to create a "glowing neon" effect
                 double borderLightness = 0.22 + 0.38 * factor;
                 Color borderColor = ColorFromHsl(hue, saturation, borderLightness);
                 _borderBrushes[i] = new SolidColorBrush(borderColor);
@@ -117,11 +113,9 @@ namespace Artnet.Views
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             Log("Inizializzazione sistema in corso...");
-            
-            // Bind list views
+
             ListConfiguredDevices.ItemsSource = _configuredDevices;
 
-            // Load initial devices or default to a simulation
             if (InitialDevices.Count > 0)
             {
                 foreach (var dev in InitialDevices)
@@ -139,18 +133,14 @@ namespace Artnet.Views
                 });
             }
 
-            // Build visual DMX Channel grid
             BuildDmxVisualGrid();
-            
-            // Load configuration options
             LoadNetworkInterfaces();
             LoadComPorts();
             RefreshMonitorUniverses();
-            
-            // Setup timers
-            _uiUpdateTimer.Interval = TimeSpan.FromMilliseconds(30); // ~33 FPS refresh rate
+
+            _uiUpdateTimer.Interval = TimeSpan.FromMilliseconds(30);
             _uiUpdateTimer.Tick += UiUpdateTimer_Tick;
-            
+
             _statsTimer.Interval = TimeSpan.FromSeconds(1);
             _statsTimer.Tick += StatsTimer_Tick;
 
@@ -168,7 +158,6 @@ namespace Artnet.Views
 
             for (int i = 0; i < 512; i++)
             {
-                // Visual block container
                 Border cellBorder = new Border
                 {
                     Background = _bgBrushes[0],
@@ -183,7 +172,6 @@ namespace Artnet.Views
                 cellGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
                 cellGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-                // Channel number label
                 TextBlock lblNum = new TextBlock
                 {
                     Text = (i + 1).ToString("D3"),
@@ -195,7 +183,6 @@ namespace Artnet.Views
                 Grid.SetRow(lblNum, 0);
                 cellGrid.Children.Add(lblNum);
 
-                // DMX value label
                 TextBlock lblVal = new TextBlock
                 {
                     Text = "0",
@@ -209,10 +196,8 @@ namespace Artnet.Views
                 cellGrid.Children.Add(lblVal);
 
                 cellBorder.Child = cellGrid;
-
                 _channelBorders[i] = cellBorder;
                 _channelValueTexts[i] = lblVal;
-
                 GridDmxChannels.Children.Add(cellBorder);
             }
         }
@@ -226,7 +211,7 @@ namespace Artnet.Views
             {
                 string hostName = Dns.GetHostName();
                 IPHostEntry host = Dns.GetHostEntry(hostName);
-                
+
                 foreach (IPAddress ip in host.AddressList)
                 {
                     if (ip.AddressFamily == AddressFamily.InterNetwork)
@@ -246,7 +231,7 @@ namespace Artnet.Views
         private void LoadComPorts()
         {
             ComboComPort.Items.Clear();
-            
+
             try
             {
                 string[] ports = SerialPort.GetPortNames();
@@ -270,8 +255,6 @@ namespace Artnet.Views
         {
             if (ComboComPort == null || BtnRefreshCom == null) return;
 
-            // Enable COM selection for COM-based drivers:
-            // 1: Enttec Pro, 2: Open DMX, 3: Enttec Pro Mk2, 4: FTDI Generic, 6: DMX4ALL, 8: Eurolite Pro
             int idx = ComboDmxDriver.SelectedIndex;
             bool needsCom = idx == 1 || idx == 2 || idx == 3 || idx == 4 || idx == 6 || idx == 8;
             ComboComPort.IsEnabled = needsCom;
@@ -312,19 +295,23 @@ namespace Artnet.Views
 
                 Log("Avvio del server in corso...");
 
-                // 1. Get configuration
                 string selectedIp = ComboIpAddress.SelectedItem?.ToString() ?? "0.0.0.0";
                 if (selectedIp.Contains(" "))
                 {
-                    selectedIp = selectedIp.Split(' ')[0]; // Strip the friendly name
+                    selectedIp = selectedIp.Split(' ')[0];
                 }
 
-                // 2. Initialize and start ArtnetNodeEngine
-                _engine = new ArtnetNodeEngine
+                _engine = _serviceProvider?.GetRequiredService<ArtnetNodeEngine>();
+                if (_engine == null)
                 {
-                    BindIpAddress = selectedIp,
-                    Port = 6454
-                };
+                    _engine = new ArtnetNodeEngine(
+                        new Drivers.DriverFactory(),
+                        new SimpleLoggerAdapter(() => LogMessageInternal),
+                        new ArtnetOptions());
+                }
+
+                _engine.BindIpAddress = selectedIp;
+                _engine.Port = 6454;
                 _engine.Interfaces.AddRange(_configuredDevices);
 
                 _engine.DmxReceived += ArtNetServer_DmxReceived;
@@ -337,7 +324,6 @@ namespace Artnet.Views
 
                 if (_engine.IsRunning)
                 {
-                    // Update UI Controls
                     ComboIpAddress.IsEnabled = false;
                     ComboUniverse.IsEnabled = false;
                     ComboDmxDriver.IsEnabled = false;
@@ -345,12 +331,11 @@ namespace Artnet.Views
                     BtnRefreshCom.IsEnabled = false;
                     BtnAddDevice.IsEnabled = false;
                     ListConfiguredDevices.IsEnabled = false;
-                    
+
                     BtnPlay.IsEnabled = false;
                     BtnStop.IsEnabled = true;
                     BtnBlackout.IsEnabled = true;
 
-                    // Start UI timers
                     _uiUpdateTimer.Start();
                     _statsTimer.Start();
 
@@ -374,7 +359,7 @@ namespace Artnet.Views
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Si è verificato un errore durante l'avvio:\n{ex.Message}", "Errore Avvio", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Si e verificato un errore durante l'avvio:\n{ex.Message}", "Errore Avvio", MessageBoxButton.OK, MessageBoxImage.Error);
                 Log($"[ERRORE] Inizializzazione fallita: {ex.Message}");
                 UpdateLedState("error");
                 _engine = null;
@@ -385,11 +370,9 @@ namespace Artnet.Views
         {
             Log("Arresto del server in corso...");
 
-            // Stop timers
             _uiUpdateTimer.Stop();
             _statsTimer.Stop();
 
-            // Stop Engine
             if (_engine != null)
             {
                 _engine.Stop();
@@ -399,23 +382,20 @@ namespace Artnet.Views
                 _engine = null;
             }
 
-            // Zero out local buffer and reset channels on GUI
             lock (_dmxLock)
             {
                 _universeBuffers.Clear();
                 _hasNewDmxData = true;
             }
-            
-            // Execute one manual UI update to visual-zero the channels
+
             UiUpdateTimer_Tick(null, null!);
 
-            // Reset UI controls
             ComboIpAddress.IsEnabled = true;
             ComboUniverse.IsEnabled = true;
             ComboDmxDriver.IsEnabled = true;
             BtnAddDevice.IsEnabled = true;
             ListConfiguredDevices.IsEnabled = true;
-            
+
             int idx = ComboDmxDriver.SelectedIndex;
             bool needsCom = idx == 1 || idx == 2 || idx == 3 || idx == 4 || idx == 6 || idx == 8;
             ComboComPort.IsEnabled = needsCom;
@@ -428,8 +408,8 @@ namespace Artnet.Views
             {
                 BtnBlackout.IsChecked = false;
                 BtnBlackout.IsEnabled = false;
-                BtnBlackout.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(38, 28, 8));
-                BtnBlackout.BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(178, 106, 0));
+                BtnBlackout.Background = new SolidColorBrush(Color.FromRgb(38, 28, 8));
+                BtnBlackout.BorderBrush = new SolidColorBrush(Color.FromRgb(178, 106, 0));
             }
 
             TxtFps.Text = "0";
@@ -445,7 +425,6 @@ namespace Artnet.Views
 
         private void ArtNetServer_DmxReceived(object? sender, DmxEventArgs e)
         {
-            // Thread-safe copy of incoming data
             lock (_dmxLock)
             {
                 if (!_universeBuffers.TryGetValue(e.Universe, out byte[]? buffer))
@@ -460,7 +439,6 @@ namespace Artnet.Views
                 _hasNewDmxData = true;
             }
 
-            // Update stats (atomic threadsafety is not critical here since it's just GUI display)
             _fpsPacketCount++;
             _totalPackets++;
             _lastSenderIp = e.SenderIp;
@@ -479,12 +457,16 @@ namespace Artnet.Views
             Dispatcher.BeginInvoke(() => Log(message));
         }
 
+        private void LogMessageInternal(string message)
+        {
+            Dispatcher.BeginInvoke(() => Log(message));
+        }
+
         private void UiUpdateTimer_Tick(object? sender, EventArgs e)
         {
             bool updateNeeded = false;
             byte[] localData = new byte[512];
 
-            // Safely fetch snapshot of current DMX values
             lock (_dmxLock)
             {
                 if (_hasNewDmxData)
@@ -500,15 +482,14 @@ namespace Artnet.Views
 
             if (updateNeeded)
             {
-                // Perform fast visual updates using our frozen brushes
                 for (int i = 0; i < 512; i++)
                 {
                     byte val = localData[i];
-                    
+
                     _channelValueTexts[i].Text = val.ToString();
                     _channelBorders[i].Background = _bgBrushes[val];
                     _channelBorders[i].BorderBrush = _borderBrushes[val];
-                    
+
                     if (val == 0)
                     {
                         _channelValueTexts[i].Foreground = _zeroTextBrush;
@@ -523,7 +504,6 @@ namespace Artnet.Views
 
         private void StatsTimer_Tick(object? sender, EventArgs e)
         {
-            // Show stats
             TxtFps.Text = _fpsPacketCount.ToString();
             TxtTotalPackets.Text = _totalPackets.ToString();
             TxtLastSender.Text = _lastSenderIp;
@@ -541,46 +521,45 @@ namespace Artnet.Views
         {
             if (state == "running")
             {
-                StatusLed.Background = new SolidColorBrush(Color.FromRgb(0, 230, 118)); // Vivid Green
+                StatusLed.Background = new SolidColorBrush(Color.FromRgb(0, 230, 118));
                 LedGlow.Color = Color.FromRgb(0, 230, 118);
                 TxtStatusLabel.Text = "IN FUNZIONE";
                 TxtStatusLabel.Foreground = new SolidColorBrush(Color.FromRgb(0, 230, 118));
             }
             else if (state == "stopped")
             {
-                StatusLed.Background = new SolidColorBrush(Color.FromRgb(62, 62, 74)); // Muted Gray
+                StatusLed.Background = new SolidColorBrush(Color.FromRgb(62, 62, 74));
                 LedGlow.Color = Color.FromRgb(62, 62, 74);
                 TxtStatusLabel.Text = "SPENTO";
                 TxtStatusLabel.Foreground = new SolidColorBrush(Color.FromRgb(143, 143, 163));
             }
             else if (state == "error")
             {
-                StatusLed.Background = new SolidColorBrush(Color.FromRgb(255, 23, 68)); // Vivid Red
+                StatusLed.Background = new SolidColorBrush(Color.FromRgb(255, 23, 68));
                 LedGlow.Color = Color.FromRgb(255, 23, 68);
                 TxtStatusLabel.Text = "ERRORE";
                 TxtStatusLabel.Foreground = new SolidColorBrush(Color.FromRgb(255, 23, 68));
             }
         }
+
         private void BtnBlackout_Click(object sender, RoutedEventArgs e)
         {
             if (_engine != null && BtnBlackout != null)
             {
                 bool isActive = BtnBlackout.IsChecked ?? false;
                 _engine.BlackoutActive = isActive;
-                
+
                 if (isActive)
                 {
-                    // Style when active (bright orange glow)
                     BtnBlackout.Background = new SolidColorBrush(Color.FromRgb(128, 60, 0));
                     BtnBlackout.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 145, 0));
-                    Log("[INFO] Modalità BLACKOUT attivata. Tutti i canali DMX sono stati azzerati.");
+                    Log("[INFO] Modalita BLACKOUT attivata. Tutti i canali DMX sono stati azzerati.");
                 }
                 else
                 {
-                    // Style when inactive (muted dark orange)
                     BtnBlackout.Background = new SolidColorBrush(Color.FromRgb(38, 28, 8));
                     BtnBlackout.BorderBrush = new SolidColorBrush(Color.FromRgb(178, 106, 0));
-                    Log("[INFO] Modalità BLACKOUT disattivata. Ripristino controllo Art-Net.");
+                    Log("[INFO] Modalita BLACKOUT disattivata. Ripristino controllo Art-Net.");
                 }
             }
         }
@@ -620,7 +599,7 @@ namespace Artnet.Views
 
                 if (_configuredDevices.Any(d => d.Universe == universe && d.DriverType == driverType && d.ComPort == portName))
                 {
-                    MessageBox.Show("Questa interfaccia DMX è già configurata per questo universo.", "Duplicato", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show("Questa interfaccia DMX e gia configurata per questo universo.", "Duplicato", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
 
@@ -713,6 +692,21 @@ namespace Artnet.Views
                     Log($"[ERRORE] Impossibile aprire il browser: {ex.Message}");
                 }
             }
+        }
+    }
+
+    public class SimpleLoggerAdapter
+    {
+        private readonly Action<string> _logAction;
+
+        public SimpleLoggerAdapter(Action<string> logAction)
+        {
+            _logAction = logAction;
+        }
+
+        public void Log(string message)
+        {
+            _logAction(message);
         }
     }
 }

@@ -5,15 +5,20 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using ArtnetNode.Core;
+using ArtnetNode.Core.Interfaces;
+using ArtnetNode.Core.Logging;
+using ArtnetNode.Drivers;
 using Artnet.Views;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Artnet;
 
-/// <summary>
-/// Interaction logic for App.xaml
-/// </summary>
 public partial class App : Application
 {
+    private IServiceProvider? _serviceProvider;
+
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AttachConsole(int dwProcessId);
 
@@ -29,7 +34,11 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        // Parse command line arguments
+        var services = new ServiceCollection();
+        ConfigureServices(services);
+
+        _serviceProvider = services.BuildServiceProvider();
+
         string mode = "gui";
         string ip = "0.0.0.0";
         int port = 6454;
@@ -67,24 +76,27 @@ public partial class App : Application
             {
                 comPort = e.Args[++i];
             }
-            else if ((arg == "--device" || arg == "-dev") && i + 1 < e.Args.Length)
+            else if (arg == "--device" || arg == "-dev")
             {
-                string devVal = e.Args[++i];
-                var parts = devVal.Split(',');
-                if (parts.Length >= 2)
+                if (i + 1 < e.Args.Length)
                 {
-                    if (int.TryParse(parts[0], out int parsedUniverse))
+                    string devVal = e.Args[++i];
+                    var parts = devVal.Split(',');
+                    if (parts.Length >= 2)
                     {
-                        var devConfig = new DmxInterfaceConfig
+                        if (int.TryParse(parts[0], out int parsedUniverse))
                         {
-                            Universe = parsedUniverse,
-                            DriverType = parts[1]
-                        };
-                        if (parts.Length >= 3)
-                        {
-                            devConfig.ComPort = parts[2];
+                            var devConfig = new DmxInterfaceConfig
+                            {
+                                Universe = parsedUniverse,
+                                DriverType = parts[1]
+                            };
+                            if (parts.Length >= 3)
+                            {
+                                devConfig.ComPort = parts[2];
+                            }
+                            parsedDevices.Add(devConfig);
                         }
-                        parsedDevices.Add(devConfig);
                     }
                 }
             }
@@ -106,8 +118,7 @@ public partial class App : Application
         }
         else
         {
-            // Default: GUI Mode
-            var mainWindow = new MainWindow();
+            var mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
             if (parsedDevices.Count > 0)
             {
                 mainWindow.InitialDevices.AddRange(parsedDevices);
@@ -116,19 +127,85 @@ public partial class App : Application
         }
     }
 
+    private void ConfigureServices(IServiceCollection services)
+    {
+        var configuration = new ConfigurationBuilder()
+            .SetBasePath(AppDomain.CurrentDomain.BaseDirectory)
+            .AddJsonFile("appsettings.json", optional: true)
+            .AddEnvironmentVariables()
+            .Build();
+
+        services.AddSingleton<IConfiguration>(configuration);
+
+        var artnetSection = configuration.GetSection("Artnet");
+        var options = new ArtnetOptions();
+        artnetSection.Bind(options);
+        services.AddSingleton(options);
+
+        services.AddLogging(builder =>
+        {
+            builder.AddConsole();
+            builder.AddDebug();
+
+            try
+            {
+                string logPath = string.IsNullOrEmpty(options.LogPath)
+                    ? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs/artnet.log")
+                    : options.LogPath;
+
+                builder.AddProvider(new FileLoggerProvider(
+                    logPath,
+                    options.MaxLogFileSizeBytes,
+                    options.MaxRetainedLogFiles));
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Impossibile configurare file logging: {ex.Message}");
+            }
+        });
+
+        services.AddSingleton<IDmxInterface, SimulationDmxInterface>();
+        services.AddSingleton<IDriverFactory, DriverFactory>();
+        services.AddSingleton<UniverseMergeManager>();
+
+        services.AddTransient<ArtNetServer>(sp =>
+        {
+            var logger = sp.GetRequiredService<ILogger<ArtNetServer>>();
+            return new ArtNetServer(logger);
+        });
+
+        services.AddTransient<ArtnetNodeEngine>(sp =>
+        {
+            var driverFactory = sp.GetRequiredService<IDriverFactory>();
+            var logger = sp.GetRequiredService<ILogger<ArtnetNodeEngine>>();
+            var opts = sp.GetRequiredService<ArtnetOptions>();
+            return new ArtnetNodeEngine(driverFactory, logger, opts);
+        });
+
+        services.AddTransient<ArtnetHttpServer>(sp =>
+        {
+            var engine = sp.GetRequiredService<ArtnetNodeEngine>();
+            var logger = sp.GetRequiredService<ILogger<ArtnetHttpServer>>();
+            var opts = sp.GetRequiredService<ArtnetOptions>();
+            return new ArtnetHttpServer(engine, logger, opts);
+        });
+
+        services.AddTransient<MainWindow>();
+    }
+
     private void ShowHelp()
     {
         InitializeConsole();
         Console.WriteLine("\n=== Art-Net Node Server - Aiuto ===");
         Console.WriteLine("Parametri disponibili:");
-        Console.WriteLine("  -m, --mode [gui|cli|headless]  Modalità di avvio (Predefinito: gui)");
+        Console.WriteLine("  -m, --mode [gui|cli|headless]  Modalita di avvio (Predefinito: gui)");
         Console.WriteLine("  -i, --ip [ip_address]          Indirizzo IP su cui bindare il server Art-Net (Predefinito: 0.0.0.0)");
         Console.WriteLine("  -p, --port [port_number]       Porta UDP per Art-Net (Predefinito: 6454)");
         Console.WriteLine("  -u, --universe [num]           Universo DMX target (Predefinito: 0)");
         Console.WriteLine("  -d, --driver [sim|pro|open]    Driver di uscita DMX (simulation, enttec, open) (Predefinito: simulation)");
         Console.WriteLine("  -c, --com [port_name]          Porta COM seriale per driver hardware (es. COM3)");
         Console.WriteLine("  -dev, --device [uni,drv,com]   Configura un'interfaccia DMX (es: 0,simulation o 1,enttec,COM3)");
-        Console.WriteLine("                                 Può essere ripetuto per configurare molteplici USB.");
+        Console.WriteLine("                                 Puo essere ripetuto per configurare molteplici USB.");
         Console.WriteLine("  -h, --help                     Mostra questo messaggio di aiuto");
         Console.WriteLine("\nEsempi:");
         Console.WriteLine("  Artnet.exe --mode cli --driver open --com COM3");
@@ -143,7 +220,6 @@ public partial class App : Application
             AllocConsole();
         }
 
-        // Re-initialize standard output/input streams
         var standardOutput = new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true };
         Console.SetOut(standardOutput);
         var standardError = new StreamWriter(Console.OpenStandardError()) { AutoFlush = true };
@@ -159,30 +235,29 @@ public partial class App : Application
         Console.Clear();
         PrintCliHeader();
 
-        var engine = new ArtnetNodeEngine
-        {
-            BindIpAddress = ip,
-            TargetUniverse = universe,
-            Port = port,
-            DriverType = driver,
-            ComPort = comPort
-        };
+        var engine = _serviceProvider.GetRequiredService<ArtnetNodeEngine>();
+        engine.BindIpAddress = ip;
+        engine.TargetUniverse = universe;
+        engine.Port = port;
+        engine.DriverType = driver;
+        engine.ComPort = comPort;
 
         if (devices.Count > 0)
         {
             engine.Interfaces.AddRange(devices);
         }
 
-        engine.LogMessage += (s, msg) => {
-            Console.ForegroundColor = ConsoleColor.Gray;
+        var logger = _serviceProvider.GetRequiredService<ILogger<App>>();
+        engine.LogMessage += (s, msg) =>
+        {
+            logger.LogInformation("{Message}", msg);
             Console.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] {msg}");
-            Console.ResetColor();
         };
 
-        engine.ErrorOccurred += (s, err) => {
-            Console.ForegroundColor = ConsoleColor.Red;
+        engine.ErrorOccurred += (s, err) =>
+        {
+            logger.LogError("{Error}", err);
             Console.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] [ERRORE] {err}");
-            Console.ResetColor();
         };
 
         try
@@ -191,9 +266,7 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"Errore fatale all'avvio dell'engine: {ex.Message}");
-            Console.ResetColor();
             Console.WriteLine(Console.IsInputRedirected ? "Uscita in corso..." : "Premere un tasto per uscire...");
             if (!Console.IsInputRedirected)
             {
@@ -203,26 +276,21 @@ public partial class App : Application
             return;
         }
 
-        Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine("Engine avviato con successo.");
         Console.WriteLine($"Dashboard Web attiva su http://localhost:{engine.HttpPort}/");
-        Console.ResetColor();
 
         var cts = new CancellationTokenSource();
 
-        // Stats timer display task
         if (!Console.IsInputRedirected)
         {
-            Task.Run(async () => {
+            Task.Run(async () =>
+            {
                 while (!cts.Token.IsCancellationRequested)
                 {
                     await Task.Delay(2000);
                     if (engine.IsRunning && !cts.Token.IsCancellationRequested)
                     {
-                        // Print small inline status
-                        Console.ForegroundColor = ConsoleColor.DarkYellow;
                         Console.Write($"\r[STAT] Pacchetti ricevuti: {engine.TotalPacketsReceived} | Ultimo IP: {engine.LastSenderIpAddress} | Stato DMX: {engine.ConnectionStatus}    ");
-                        Console.ResetColor();
                     }
                 }
             }, cts.Token);
@@ -234,7 +302,7 @@ public partial class App : Application
             if (Console.IsInputRedirected)
             {
                 string? line = Console.ReadLine();
-                if (line == null) // EOF
+                if (line == null)
                 {
                     exit = true;
                     break;
@@ -285,11 +353,9 @@ public partial class App : Application
 
     private void PrintCliHeader()
     {
-        Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("====================================================");
         Console.WriteLine("           ART-NET NODE - MODALITA' CLI             ");
         Console.WriteLine("====================================================");
-        Console.ResetColor();
         Console.WriteLine("Comandi CLI disponibili:");
         Console.WriteLine("  [S] Mostra Statistiche attuali");
         Console.WriteLine("  [C] Pulisci Schermata");
@@ -299,7 +365,6 @@ public partial class App : Application
 
     private void PrintCliStats(ArtnetNodeEngine engine)
     {
-        Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine($"\n--- STATISTICHE ATTUALI (ore {DateTime.Now:HH:mm:ss}) ---");
         Console.WriteLine($"  - Indirizzo Bind: {engine.BindIpAddress}:{engine.Port}");
         Console.WriteLine($"  - Dashboard Web: http://localhost:{engine.HttpPort}/");
@@ -313,19 +378,16 @@ public partial class App : Application
             Console.WriteLine($"    * Universo {inst.Config.Universe}: {inst.Config.DriverType}{portText} -> Stato: {inst.ConnectionStatus}");
         }
         Console.WriteLine("-----------------------------------------");
-        Console.ResetColor();
     }
 
     private void RunHeadlessMode(string ip, int port, int universe, string driver, string comPort, List<DmxInterfaceConfig> devices)
     {
-        var engine = new ArtnetNodeEngine
-        {
-            BindIpAddress = ip,
-            TargetUniverse = universe,
-            Port = port,
-            DriverType = driver,
-            ComPort = comPort
-        };
+        var engine = _serviceProvider.GetRequiredService<ArtnetNodeEngine>();
+        engine.BindIpAddress = ip;
+        engine.TargetUniverse = universe;
+        engine.Port = port;
+        engine.DriverType = driver;
+        engine.ComPort = comPort;
 
         if (devices.Count > 0)
         {
@@ -350,26 +412,39 @@ public partial class App : Application
 
         try
         {
-            Console.CancelKeyPress += (s, ev) => {
+            Console.CancelKeyPress += (s, ev) =>
+            {
                 ev.Cancel = true;
                 exitEvent.Set();
             };
         }
         catch
         {
-            // Ignore if console is not attached
         }
 
-        AppDomain.CurrentDomain.ProcessExit += (s, ev) => {
+        AppDomain.CurrentDomain.ProcessExit += (s, ev) =>
+        {
             engine.Stop();
             exitEvent.Set();
         };
 
-        // Wait for exit signal
         exitEvent.WaitOne();
-
         engine.Stop();
-        Shutdown();
+        CleanupServices();
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        CleanupServices();
+        base.OnExit(e);
+    }
+
+    private void CleanupServices()
+    {
+        try
+        {
+            (_serviceProvider as IDisposable)?.Dispose();
+        }
+        catch { }
     }
 }
-
