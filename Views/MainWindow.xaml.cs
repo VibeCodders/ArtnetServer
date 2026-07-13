@@ -694,19 +694,4 @@ namespace Artnet.Views
             }
         }
     }
-
-    public class SimpleLoggerAdapter
-    {
-        private readonly Action<string> _logAction;
-
-        public SimpleLoggerAdapter(Action<string> logAction)
-        {
-            _logAction = logAction;
-        }
-
-        public void Log(string message)
-        {
-            _logAction(message);
-        }
-    }
 }
