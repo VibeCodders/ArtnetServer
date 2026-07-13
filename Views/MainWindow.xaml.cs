@@ -305,8 +305,8 @@ namespace Artnet.Views
                 if (_engine == null)
                 {
                     _engine = new ArtnetNodeEngine(
-                        new Drivers.DriverFactory(),
-                        new SimpleLoggerAdapter(() => LogMessageInternal),
+                        new ArtnetNode.Drivers.DriverFactory(),
+                        new SimpleLoggerAdapter(msg => LogMessageInternal(msg)),
                         new ArtnetOptions());
                 }
 

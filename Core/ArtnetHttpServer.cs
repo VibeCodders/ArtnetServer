@@ -159,7 +159,7 @@ namespace ArtnetNode.Core
                 try
                 {
                     HttpListenerContext context = await _listener.GetContextAsync();
-                    _ = Task.Run(() => HandleRequestAsync(context), token);
+                    _ = Task.Run(() => HandleRequestAsync(context, token), token);
                 }
                 catch (ObjectDisposedException)
                 {
@@ -175,7 +175,7 @@ namespace ArtnetNode.Core
             }
         }
 
-        private async Task HandleRequestAsync(HttpListenerContext context)
+        private async Task HandleRequestAsync(HttpListenerContext context, CancellationToken token)
         {
             HttpListenerRequest request = context.Request;
             HttpListenerResponse response = context.Response;
