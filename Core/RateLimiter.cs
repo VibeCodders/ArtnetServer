@@ -1,7 +1,7 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
-using Microsoft.Extensions.Logging;
 
 namespace ArtnetNode.Core
 {
@@ -9,8 +9,12 @@ namespace ArtnetNode.Core
     {
         private readonly int _maxRequests;
         private readonly int _windowSeconds;
-        private readonly Dictionary<string, Queue<DateTime>> _requests = new Dictionary<string, Queue<DateTime>>();
-        private readonly object _lock = new object();
+        private readonly ConcurrentDictionary<string, Queue<DateTime>> _requests = new();
+        private readonly object _cleanupLock = new object();
+        
+        public long TotalRequestsProcessed { get; private set; }
+        public long TotalRequestsRejected { get; private set; }
+        public int ActiveClients => _requests.Count;
 
         public RateLimiter(int maxRequests, int windowSeconds)
         {
@@ -22,33 +26,33 @@ namespace ArtnetNode.Core
         {
             if (string.IsNullOrEmpty(clientIp)) clientIp = "unknown";
 
-            lock (_lock)
+            Interlocked.Increment(ref _totalRequests);
+            
+            if (!_requests.TryGetValue(clientIp, out var queue))
             {
-                if (!_requests.TryGetValue(clientIp, out var queue))
-                {
-                    queue = new Queue<DateTime>();
-                    _requests[clientIp] = queue;
-                }
-
-                var cutoff = DateTime.UtcNow.AddSeconds(-_windowSeconds);
-                while (queue.Count > 0 && queue.Peek() < cutoff)
-                {
-                    queue.Dequeue();
-                }
-
-                if (queue.Count >= _maxRequests)
-                {
-                    return false;
-                }
-
-                queue.Enqueue(DateTime.UtcNow);
-                return true;
+                queue = new Queue<DateTime>();
+                _requests[clientIp] = queue;
             }
+
+            var cutoff = DateTime.UtcNow.AddSeconds(-_windowSeconds);
+            while (queue.Count > 0 && queue.Peek() < cutoff)
+            {
+                queue.Dequeue();
+            }
+
+            if (queue.Count >= _maxRequests)
+            {
+                Interlocked.Increment(ref _totalRejected);
+                return false;
+            }
+
+            queue.Enqueue(DateTime.UtcNow);
+            return true;
         }
 
         public void Cleanup()
         {
-            lock (_lock)
+            lock (_cleanupLock)
             {
                 var cutoff = DateTime.UtcNow.AddSeconds(-_windowSeconds * 2);
                 var keysToRemove = new List<string>();
@@ -67,9 +71,30 @@ namespace ArtnetNode.Core
 
                 foreach (var key in keysToRemove)
                 {
-                    _requests.Remove(key);
+                    _requests.TryRemove(key, out _);
                 }
             }
+        }
+        
+        public RateLimitStats GetStats()
+        {
+            return new RateLimitStats
+            {
+                TotalRequests = TotalRequestsProcessed,
+                TotalRejected = TotalRequestsRejected,
+                ActiveClients = ActiveClients,
+                MaxRequestsPerWindow = _maxRequests,
+                WindowSeconds = _windowSeconds
+            };
+        }
+        
+        public class RateLimitStats
+        {
+            public long TotalRequests { get; set; }
+            public long TotalRejected { get; set; }
+            public int ActiveClients { get; set; }
+            public int MaxRequestsPerWindow { get; set; }
+            public int WindowSeconds { get; set; }
         }
     }
 }
