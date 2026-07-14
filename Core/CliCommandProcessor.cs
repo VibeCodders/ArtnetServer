@@ -298,7 +298,7 @@ public class CliCommandProcessor
         var parts = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 0)
         {
-            Console.WriteLine($"Livello log corrente: {_options.VerboseLogging ? "Debug" : "Information"}");
+            Console.WriteLine($"Livello log corrente: {(_options.VerboseLogging ? "Debug" : "Information")}");
             Console.WriteLine("Uso: log-level [debug|information|warning|error]");
             return;
         }
