@@ -12,8 +12,11 @@ namespace ArtnetNode.Core
         private readonly ConcurrentDictionary<string, Queue<DateTime>> _requests = new();
         private readonly object _cleanupLock = new object();
         
-        public long TotalRequestsProcessed { get; private set; }
-        public long TotalRequestsRejected { get; private set; }
+        private long _totalRequests;
+        private long _totalRejected;
+
+        public long TotalRequestsProcessed => Interlocked.Read(ref _totalRequests);
+        public long TotalRequestsRejected => Interlocked.Read(ref _totalRejected);
         public int ActiveClients => _requests.Count;
 
         public RateLimiter(int maxRequests, int windowSeconds)
