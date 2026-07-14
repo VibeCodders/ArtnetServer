@@ -11,8 +11,8 @@ namespace Artnet.Tests
             var manager = new UniverseMergeManager(htpTimeoutMs: 1000, defaultMode: MergeMode.Htp);
             manager.RegisterUniverse(0);
 
-            manager.UpdateUniverse(0, MakeDmx(1, 100), "192.168.0.1", 0);
-            manager.UpdateUniverse(0, MakeDmx(1, 80), "192.168.0.2", 0);
+            manager.UpdateUniverse(0, MakeDmx(0, 100), "192.168.0.1", 0);
+            manager.UpdateUniverse(0, MakeDmx(0, 80), "192.168.0.2", 0);
 
             byte[] merged = manager.GetMergedDmx(0);
             Assert.Equal(100, merged[0]);
@@ -24,8 +24,8 @@ namespace Artnet.Tests
             var manager = new UniverseMergeManager(htpTimeoutMs: 1000, defaultMode: MergeMode.Ltp);
             manager.RegisterUniverse(0);
 
-            manager.UpdateUniverse(0, MakeDmx(1, 100), "192.168.0.1", 0);
-            manager.UpdateUniverse(0, MakeDmx(1, 80), "192.168.0.2", 0);
+            manager.UpdateUniverse(0, MakeDmx(0, 100), "192.168.0.1", 0);
+            manager.UpdateUniverse(0, MakeDmx(0, 80), "192.168.0.2", 0);
 
             byte[] merged = manager.GetMergedDmx(0);
             Assert.Equal(80, merged[0]);
@@ -67,8 +67,8 @@ namespace Artnet.Tests
         {
             var manager = new UniverseMergeManager(defaultMode: MergeMode.Htp);
 
-            manager.UpdateUniverse(0, MakeDmx(1, 100), "A", 0, MergeMode.Ltp);
-            manager.UpdateUniverse(0, MakeDmx(1, 40), "B", 0, MergeMode.Ltp);
+            manager.UpdateUniverse(0, MakeDmx(0, 100), "A", 0, MergeMode.Ltp);
+            manager.UpdateUniverse(0, MakeDmx(0, 40), "B", 0, MergeMode.Ltp);
 
             byte[] merged = manager.GetMergedDmx(0);
             Assert.Equal(40, merged[0]);
