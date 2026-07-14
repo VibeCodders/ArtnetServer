@@ -306,7 +306,7 @@ namespace Artnet.Views
                 {
                     _engine = new ArtnetNodeEngine(
                         new ArtnetNode.Drivers.DriverFactory(),
-                        new SimpleLoggerAdapter(msg => LogMessageInternal(msg)),
+                        Microsoft.Extensions.Logging.Abstractions.NullLogger<ArtnetNodeEngine>.Instance,
                         new ArtnetOptions());
                 }
 
@@ -453,11 +453,6 @@ namespace Artnet.Views
         }
 
         private void ArtNetServer_LogMessage(object? sender, string message)
-        {
-            Dispatcher.BeginInvoke(() => Log(message));
-        }
-
-        private void LogMessageInternal(string message)
         {
             Dispatcher.BeginInvoke(() => Log(message));
         }

@@ -20,7 +20,6 @@ namespace ArtnetNode.Core
         private readonly DateTime _startTime;
         private bool _isRunning;
         private string _htmlContent = "";
-        private int _eventId;
 
         public int Port { get; private set; } = 8080;
         public bool IsRunning => _isRunning;
@@ -385,10 +384,34 @@ namespace ArtnetNode.Core
             response.Headers.Add("Cache-Control", "no-cache");
             response.Headers.Add("Connection", "keep-alive");
 
-            _engine.StatusChanged += OnEngineStatusChanged;
-            _engine.DmxReceived += OnEngineDmxReceived;
-            _engine.ErrorOccurred += OnEngineError;
-            _engine.LogMessage += OnEngineLog;
+            var writeLock = new System.Threading.SemaphoreSlim(1, 1);
+
+            async Task PushEvent(string eventName, object data)
+            {
+                if (!_isRunning) return;
+                try
+                {
+                    await writeLock.WaitAsync(requestToken);
+                    await SendSseEvent(response, eventName, data);
+                }
+                catch
+                {
+                }
+                finally
+                {
+                    writeLock.Release();
+                }
+            }
+
+            void OnStatus(object? s, EventArgs e) => _ = PushEvent("status", new { time = DateTime.Now });
+            void OnDmx(object? s, DmxEventArgs e) => _ = PushEvent("dmx", new { universe = e.Universe, senderIp = e.SenderIp });
+            void OnError(object? s, string err) => _ = PushEvent("error", new { message = err, time = DateTime.Now });
+            void OnLog(object? s, string msg) => _ = PushEvent("log", new { message = msg, time = DateTime.Now });
+
+            _engine.StatusChanged += OnStatus;
+            _engine.DmxReceived += OnDmx;
+            _engine.ErrorOccurred += OnError;
+            _engine.LogMessage += OnLog;
 
             try
             {
@@ -414,52 +437,12 @@ namespace ArtnetNode.Core
             }
             finally
             {
-                _engine.StatusChanged -= OnEngineStatusChanged;
-                _engine.DmxReceived -= OnEngineDmxReceived;
-                _engine.ErrorOccurred -= OnEngineError;
-                _engine.LogMessage -= OnEngineLog;
+                _engine.StatusChanged -= OnStatus;
+                _engine.DmxReceived -= OnDmx;
+                _engine.ErrorOccurred -= OnError;
+                _engine.LogMessage -= OnLog;
                 try { response.OutputStream.Close(); } catch { }
             }
-        }
-
-        private async void OnEngineStatusChanged(object? sender, EventArgs e)
-        {
-            if (!_isRunning) return;
-            try
-            {
-                await SendSseEventLocal("status", new { time = DateTime.Now });
-            }
-            catch { }
-        }
-
-        private async void OnEngineDmxReceived(object? sender, DmxEventArgs e)
-        {
-            if (!_isRunning) return;
-            try
-            {
-                await SendSseEventLocal("dmx", new { universe = e.Universe, senderIp = e.SenderIp });
-            }
-            catch { }
-        }
-
-        private async void OnEngineError(object? sender, string error)
-        {
-            if (!_isRunning) return;
-            try
-            {
-                await SendSseEventLocal("error", new { message = error, time = DateTime.Now });
-            }
-            catch { }
-        }
-
-        private async void OnEngineLog(object? sender, string message)
-        {
-            if (!_isRunning) return;
-            try
-            {
-                await SendSseEventLocal("log", new { message, time = DateTime.Now });
-            }
-            catch { }
         }
 
         private async Task SendSseEvent(HttpListenerResponse response, string eventName, object data)
@@ -469,10 +452,6 @@ namespace ArtnetNode.Core
             byte[] buffer = Encoding.UTF8.GetBytes(sse);
             await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
             await response.OutputStream.FlushAsync();
-        }
-
-        private async Task SendSseEventLocal(string eventName, object data)
-        {
         }
 
         private async Task ServeUniversesAsync(HttpListenerResponse response)

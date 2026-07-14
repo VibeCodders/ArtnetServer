@@ -190,7 +190,7 @@ public partial class App : Application
             return new ArtnetHttpServer(engine, logger, opts);
         });
 
-        services.AddTransient<MainWindow>();
+        services.AddTransient<MainWindow>(sp => new MainWindow(sp));
     }
 
     private void ShowHelp()
@@ -235,7 +235,7 @@ public partial class App : Application
         Console.Clear();
         PrintCliHeader();
 
-        var engine = _serviceProvider.GetRequiredService<ArtnetNodeEngine>();
+        var engine = _serviceProvider!.GetRequiredService<ArtnetNodeEngine>();
         engine.BindIpAddress = ip;
         engine.TargetUniverse = universe;
         engine.Port = port;
@@ -247,7 +247,7 @@ public partial class App : Application
             engine.Interfaces.AddRange(devices);
         }
 
-        var logger = _serviceProvider.GetRequiredService<ILogger<App>>();
+        var logger = _serviceProvider!.GetRequiredService<ILogger<App>>();
         engine.LogMessage += (s, msg) =>
         {
             logger.LogInformation("{Message}", msg);
@@ -382,7 +382,7 @@ public partial class App : Application
 
     private void RunHeadlessMode(string ip, int port, int universe, string driver, string comPort, List<DmxInterfaceConfig> devices)
     {
-        var engine = _serviceProvider.GetRequiredService<ArtnetNodeEngine>();
+        var engine = _serviceProvider!.GetRequiredService<ArtnetNodeEngine>();
         engine.BindIpAddress = ip;
         engine.TargetUniverse = universe;
         engine.Port = port;

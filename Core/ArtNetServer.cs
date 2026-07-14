@@ -76,6 +76,41 @@ namespace ArtnetNode.Core
             }
         }
 
+        public static bool TryParseDmxPacket(ReadOnlySpan<byte> data, out int universe, out byte sequence, out byte[] dmx)
+        {
+            universe = 0;
+            sequence = 0;
+            dmx = Array.Empty<byte>();
+
+            if (data.Length < 14)
+                return false;
+
+            if (data[0] != 'A' || data[1] != 'r' || data[2] != 't' || data[3] != '-' ||
+                data[4] != 'N' || data[5] != 'e' || data[6] != 't' || data[7] != 0)
+                return false;
+
+            int opCode = data[8] | (data[9] << 8);
+            if (opCode != 0x5000)
+                return false;
+
+            if (data.Length < 18)
+                return false;
+
+            sequence = data[12];
+            universe = data[14] | ((data[15] & 0x7F) << 8);
+            int length = (data[16] << 8) | data[17];
+
+            if (length < 2 || length > 512)
+                return false;
+
+            if (data.Length < 18 + length)
+                return false;
+
+            dmx = new byte[length];
+            data.Slice(18, length).CopyTo(dmx);
+            return true;
+        }
+
         public void Start()
         {
             if (_isRunning) return;
@@ -165,34 +200,15 @@ namespace ArtnetNode.Core
                         continue;
                     }
 
-                    if (data.Length < 18)
-                        continue;
-
-                    int protVer = (data[10] << 8) | data[11];
-                    if (protVer < 14)
+                    if (TryParseDmxPacket(data, out int universe, out byte sequence, out byte[] dmxData))
                     {
-                    }
+                        TotalPacketsReceived++;
+                        LastSenderIpAddress = senderIp;
 
-                    byte sequence = data[12];
-                    byte physical = data[13];
-                    int universe = data[14] | ((data[15] & 0x7F) << 8);
-                    int length = (data[16] << 8) | data[17];
-
-                    if (length < 2 || length > 512)
-                        continue;
-
-                    if (data.Length < 18 + length)
-                        continue;
-
-                    TotalPacketsReceived++;
-                    LastSenderIpAddress = senderIp;
-
-                    byte[] dmxData = new byte[length];
-                    Array.Copy(data, 18, dmxData, 0, length);
-
-                    if (TargetUniverses.Contains(universe))
-                    {
-                        DmxReceived?.Invoke(this, new DmxEventArgs(dmxData, universe, senderIp, sequence));
+                        if (TargetUniverses.Contains(universe))
+                        {
+                            DmxReceived?.Invoke(this, new DmxEventArgs(dmxData, universe, senderIp, sequence));
+                        }
                     }
                 }
                 catch (ObjectDisposedException)
