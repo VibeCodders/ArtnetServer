@@ -46,12 +46,12 @@ namespace ArtnetNode.Drivers
                 try
                 {
                     port.BreakState = true;
-                    HighResolutionDelay(100);
+                    PrecisionDelay(100);
 
                     port.BreakState = false;
-                    HighResolutionDelay(12);
+                    PrecisionDelay(12);
 
-                    SafeWrite(localBuffer, 0, localBuffer.Length, 30);
+                    SafeWrite(localBuffer, 0, localBuffer.Length, BaudRate);
                 }
                 catch
                 {
@@ -60,13 +60,23 @@ namespace ArtnetNode.Drivers
             }
         }
 
-        private void HighResolutionDelay(double microseconds)
+        private void PrecisionDelay(double microseconds)
         {
-            long ticks = (long)(microseconds * Stopwatch.Frequency / 1_000_000);
-            long startTicks = Stopwatch.GetTimestamp();
-            while (Stopwatch.GetTimestamp() - startTicks < ticks)
+            const int spinThresholdUs = 50;
+            if (microseconds <= spinThresholdUs)
             {
-                Thread.SpinWait(1);
+                long ticks = (long)(microseconds * Stopwatch.Frequency / 1_000_000);
+                long start = Stopwatch.GetTimestamp();
+                while (Stopwatch.GetTimestamp() - start < ticks)
+                    Thread.SpinWait(1);
+            }
+            else
+            {
+                Thread.Sleep(TimeSpan.FromMicroseconds(microseconds - spinThresholdUs));
+                long remaining = (long)(spinThresholdUs * Stopwatch.Frequency / 1_000_000);
+                long start = Stopwatch.GetTimestamp();
+                while (Stopwatch.GetTimestamp() - start < remaining)
+                    Thread.SpinWait(1);
             }
         }
     }

@@ -75,6 +75,13 @@ namespace ArtnetNode.Core
                         result.UnhealthyCount++;
                         _engine.HandleDisconnectAndScheduleReconnect(inst);
                     }
+                    else if (inst.Interface is ArtnetNode.Drivers.SerialDmxDriverBase serial && serial.TxStalled)
+                    {
+                        interfaceResult.Status = HealthStatus.Degraded;
+                        interfaceResult.Message = "TX bloccato (watchdog)";
+                        interfaceResult.TxStalled = true;
+                        result.DegradedCount++;
+                    }
                     else
                     {
                         interfaceResult.Status = HealthStatus.Healthy;
@@ -170,6 +177,7 @@ namespace ArtnetNode.Core
         public bool IsConnected { get; set; }
         public bool IsReconnecting { get; set; }
         public int ReconnectAttempt { get; set; }
+        public bool TxStalled { get; set; }
         public HealthStatus Status { get; set; }
         public string Message { get; set; } = "";
     }

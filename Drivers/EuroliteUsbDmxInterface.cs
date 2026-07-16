@@ -49,7 +49,7 @@ namespace ArtnetNode.Drivers
 
                 try
                 {
-                    SafeWrite(localBuffer, 0, localBuffer.Length, 45);
+                    SafeWrite(localBuffer, 0, localBuffer.Length, BaudRate);
                 }
                 catch
                 {

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO.Ports;
 
 namespace ArtnetNode.Drivers
@@ -10,6 +11,40 @@ namespace ArtnetNode.Drivers
         protected Thread? _txThread;
         protected bool _isTxRunning;
         protected readonly byte[] _sharedBuffer = new byte[512];
+
+        protected const long MinFrameIntervalUs = 25000;
+
+        private Stopwatch? _txWatchdog = new Stopwatch();
+        private long _lastWriteTimestampTicks;
+        private readonly object _watchdogLock = new object();
+        protected const int TxWatchdogTimeoutMs = 1000;
+
+        protected bool IsTxStalled
+        {
+            get
+            {
+                lock (_watchdogLock)
+                {
+                    if (_txWatchdog == null || !_txWatchdog.IsRunning)
+                        return false;
+                    return _txWatchdog.ElapsedMilliseconds > TxWatchdogTimeoutMs;
+                }
+            }
+        }
+
+        public bool TxStalled => IsTxStalled;
+
+        protected void MarkTxAlive()
+        {
+            lock (_watchdogLock)
+            {
+                if (_txWatchdog != null)
+                {
+                    _txWatchdog.Restart();
+                }
+                _lastWriteTimestampTicks = Stopwatch.GetTimestamp();
+            }
+        }
 
         public string ConnectionStatus => IsConnected 
             ? $"Connesso su {_serialPort?.PortName} ({DriverName})" 
@@ -39,6 +74,9 @@ namespace ArtnetNode.Drivers
                 {
                     Handshake = Handshake,
                     WriteTimeout = 500,
+                    ReadTimeout = 500,
+                    WriteBufferSize = 4096,
+                    ReadBufferSize = 4096,
                     DtrEnable = true,
                     RtsEnable = true
                 };
@@ -50,6 +88,11 @@ namespace ArtnetNode.Drivers
                 Array.Clear(_sharedBuffer, 0, _sharedBuffer.Length);
 
                 _isTxRunning = true;
+                lock (_watchdogLock)
+                {
+                    _txWatchdog = Stopwatch.StartNew();
+                    _lastWriteTimestampTicks = Stopwatch.GetTimestamp();
+                }
                 _txThread = new Thread(TxLoop)
                 {
                     IsBackground = true,
@@ -111,7 +154,7 @@ namespace ArtnetNode.Drivers
 
         protected abstract void TxLoop();
 
-        protected void SafeWrite(byte[] buffer, int offset, int count, int sleepMs)
+        protected void SafeWrite(byte[] buffer, int offset, int count, int baudRate)
         {
             try
             {
@@ -122,9 +165,13 @@ namespace ArtnetNode.Drivers
             }
             finally
             {
-                if (sleepMs > 0)
+                MarkTxAlive();
+
+                long transmissionTimeUs = (long)((double)count * 10 * 1_000_000 / baudRate);
+                long minFrameSpacingUs = Math.Max(0, MinFrameIntervalUs - transmissionTimeUs);
+                if (minFrameSpacingUs > 0)
                 {
-                    Thread.Sleep(sleepMs);
+                    Thread.Sleep(TimeSpan.FromMicroseconds(minFrameSpacingUs));
                 }
             }
         }
